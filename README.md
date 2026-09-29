@@ -155,5 +155,20 @@ transaction signatures. Read-only ownership checks are not escrow.
 
 ## Asset credits & licences
 
-See [README section 8](README.md#8-asset-credits--license-notices) and
-[`ART_BIBLE.md`](ART_BIBLE.md).
+- **Rare Friends** — NFT names, artwork and metadata belong to Rare Friends.
+  Live NFT art is fetched from the collection's OpenSea metadata; the 16×16
+  pixel sprite fallback is original Rare Arcade code (`src/data/demoFriends.ts`,
+  `src/components/ui/RareFriendSprite.tsx`).
+- **OpenSea** — NFT discovery, collection identity, metadata, artwork and
+  market data via the public [OpenSea API v2](https://docs.opensea.io/).
+- **Robinhood Chain** — read-only JSON-RPC for `ownerOf` ownership
+  verification (chain ID 4663). No writes, no transactions.
+- **Fonts** — [Press Start 2P](https://fonts.google.com/specimen/Press+Start+2P)
+  and [Silkscreen](https://fonts.google.com/specimen/Silkscreen), via Google
+  Fonts (SIL Open Font License).
+- **Audio** — all sound effects are synthesised at runtime with the Web Audio
+  API (`src/utils/audio.ts`). No sampled audio files are bundled.
+- **All Rare Arcade pixel artwork** (cabinets, `$RF` coin, icons, pull FX) is
+  original to this project and defined in code as SVG.
+
+Visual system and art direction: [`ART_BIBLE.md`](ART_BIBLE.md).
