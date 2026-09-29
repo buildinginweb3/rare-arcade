@@ -57,7 +57,7 @@ Creators never hand-guess "this NFT is worth 20,000 RF." Rare Arcade reads
 OpenSea market data and derives an RF reference automatically:
 
 ```
-collection top-bid USD  ÷  current $RAREFRIENDS USD  =  RF floor reference
+collection top-bid USD  ÷  current $RAREFRIENDS USD  =  RF market reference
 ```
 
 Notes:
@@ -67,8 +67,10 @@ Notes:
   quantity first — otherwise a 25-token bid reads ~25× too high.
 - Rare Friends **Generations** are valued generation-aware via trait offers
   where the data is available, with documented fallbacks.
-- Floor references are **market references used by the economics model, not
-  guaranteed sale values** for individual NFTs.
+- The valuation basis is the **highest active offer (top bid)**, not a floor
+  price. The resulting market reference is a **reference used by the economics
+  model, not a guaranteed sale value** for an individual NFT, and not the amount a
+  creator can expect to realise.
 - Valuation snapshots are locked at publish time, so live market moves cannot
   mutate a published machine's RTP or EV.
 
