@@ -1,0 +1,614 @@
+/* ==========================================================================
+   RARE ARCADE — Monochrome Pixel Design System
+   Visual North Star: Rare Friends × Retro Handheld × Virtual Pet Toy
+   ========================================================================== */
+
+:root {
+  --color-black: #000000;
+  --color-white: #ffffff;
+  --color-lcd-bg: #f5f5ee;
+  --color-lcd-dim: #e4e4dc;
+  --color-lcd-dark: #1a1a1a;
+  --color-gray-dark: #404040;
+  --color-gray-mid: #7e7e78;
+  --color-gray-light: #cccccc;
+
+  --font-display: 'Press Start 2P', monospace;
+  --font-lcd: 'Silkscreen', monospace;
+  --font-body: 'Courier New', Courier, monospace;
+
+  --border-thick: 3px solid var(--color-black);
+  --border-thin: 2px solid var(--color-black);
+  --shadow-chunky: 3px 3px 0px var(--color-black);
+  --shadow-deep: 5px 5px 0px var(--color-black);
+  --shadow-inset: inset 2px 2px 0px rgba(0, 0, 0, 0.2);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  background-color: #ededeb;
+  color: var(--color-black);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+  image-rendering: pixelated;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* Background dither pattern */
+body {
+  background-image:
+    radial-gradient(var(--color-gray-light) 1px, transparent 0);
+  background-size: 8px 8px;
+}
+
+/* Focus outline for accessibility */
+*:focus-visible {
+  outline: 3px dotted var(--color-black);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   PERSISTENT SIMULATION BANNER
+   ========================================================================== */
+.sim-banner {
+  background-color: var(--color-black);
+  color: var(--color-white);
+  padding: 6px 12px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid var(--color-black);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.sim-banner-pill {
+  background-color: var(--color-white);
+  color: var(--color-black);
+  padding: 2px 6px;
+  font-size: 8px;
+  font-weight: bold;
+}
+
+/* ==========================================================================
+   TYPOGRAPHY
+   ========================================================================== */
+h1, h2, h3, .pixel-title {
+  font-family: var(--font-display);
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pixel-lcd-text {
+  font-family: var(--font-lcd);
+}
+
+/* ==========================================================================
+   PIXEL COMPONENTS & PANELS
+   ========================================================================== */
+.pixel-box {
+  background: var(--color-white);
+  border: var(--border-thick);
+  box-shadow: var(--shadow-chunky);
+}
+
+.pixel-panel {
+  background: var(--color-lcd-bg);
+  border: var(--border-thick);
+  box-shadow: var(--shadow-chunky);
+  padding: 16px;
+}
+
+.pixel-panel-sunken {
+  background: var(--color-lcd-dim);
+  border: 2px solid var(--color-black);
+  box-shadow: inset 2px 2px 0px rgba(0, 0, 0, 0.15);
+}
+
+.pixel-marquee {
+  background: var(--color-black);
+  color: var(--color-white);
+  padding: 8px 12px;
+  border-bottom: var(--border-thick);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ==========================================================================
+   WORKSHOP TRAYS (tamagotchi cartridge slots for the creator flow)
+   ========================================================================== */
+.workshop-tray {
+  background: var(--color-lcd-dim);
+  border: 2px solid var(--color-black);
+  box-shadow: inset 2px 2px 0px rgba(0, 0, 0, 0.15);
+}
+
+.workshop-tray-label {
+  background: var(--color-black);
+  color: var(--color-white);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workshop-tray-body {
+  padding: 12px;
+}
+
+.workshop-lcd-tile {
+  background: var(--color-lcd-bg);
+  border: 2px solid var(--color-black);
+  box-shadow: inset 2px 2px 0px rgba(0, 0, 0, 0.15);
+  padding: 8px 10px;
+}
+
+.workshop-lcd-caption {
+  font-family: var(--font-lcd);
+  font-size: 9px;
+  color: #666;
+}
+
+.workshop-lcd-value {
+  font-family: var(--font-lcd);
+  font-size: 13px;
+  font-weight: bold;
+  margin-top: 2px;
+}
+
+/* ==========================================================================
+   BUTTONS
+   ========================================================================== */
+.pixel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--color-white);
+  color: var(--color-black);
+  border: var(--border-thick);
+  box-shadow: var(--shadow-chunky);
+  font-family: var(--font-display);
+  font-size: 11px;
+  padding: 10px 16px;
+  cursor: pointer;
+  text-transform: uppercase;
+  user-select: none;
+  transition: transform 0.05s steps(2);
+  text-decoration: none;
+}
+
+.pixel-btn:hover:not(:disabled) {
+  background: var(--color-black);
+  color: var(--color-white);
+}
+
+.pixel-btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0px var(--color-black);
+}
+
+.pixel-btn:disabled {
+  background: #e0e0d8;
+  color: var(--color-gray-mid);
+  border-color: var(--color-gray-mid);
+  cursor: not-allowed;
+  box-shadow: 2px 2px 0px var(--color-gray-mid);
+}
+
+.pixel-btn-primary {
+  background: var(--color-black);
+  color: var(--color-white);
+}
+
+.pixel-btn-primary:hover:not(:disabled) {
+  background: var(--color-white);
+  color: var(--color-black);
+}
+
+.pixel-btn-sm {
+  font-size: 9px;
+  padding: 6px 10px;
+}
+
+.pixel-btn-lg {
+  font-size: 14px;
+  padding: 14px 24px;
+}
+
+/* ==========================================================================
+   PIXEL CABINET VISUAL
+   ========================================================================== */
+.cabinet-container {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-white);
+  border: 4px solid var(--color-black);
+  box-shadow: var(--shadow-deep);
+  position: relative;
+  max-width: 380px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.cabinet-header {
+  background: var(--color-black);
+  color: var(--color-white);
+  padding: 10px 12px;
+  border-bottom: 3px solid var(--color-black);
+  text-align: center;
+}
+
+.cabinet-screen-bezel {
+  background: #333333;
+  padding: 12px;
+  border-bottom: 3px solid var(--color-black);
+}
+
+.cabinet-lcd-screen {
+  background: var(--color-lcd-bg);
+  border: 3px solid var(--color-black);
+  padding: 12px;
+  box-shadow: inset 2px 2px 0px rgba(0, 0, 0, 0.2);
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.cabinet-controls {
+  background: var(--color-lcd-dim);
+  padding: 14px;
+  border-bottom: 3px solid var(--color-black);
+}
+
+.cabinet-hatch {
+  background: #2a2a2a;
+  padding: 10px;
+  border-top: 2px solid #555555;
+  text-align: center;
+  color: #888888;
+  font-family: var(--font-lcd);
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+/* ==========================================================================
+   RARE FRIEND PIXEL SPRITE RENDERER
+   ========================================================================== */
+.rare-friend-sprite {
+  display: inline-grid;
+  grid-template-columns: repeat(16, 1fr);
+  grid-template-rows: repeat(16, 1fr);
+  image-rendering: pixelated;
+  background: transparent;
+  user-select: none;
+}
+
+.sprite-pixel-filled {
+  background-color: var(--color-black);
+}
+
+.sprite-pixel-empty {
+  background-color: transparent;
+}
+
+.friend-card {
+  background: var(--color-white);
+  border: 3px solid var(--color-black);
+  box-shadow: var(--shadow-chunky);
+  padding: 10px;
+  text-align: center;
+  transition: transform 0.1s steps(2);
+}
+
+.friend-card:hover {
+  transform: translateY(-2px);
+}
+
+.friend-card-selected {
+  border: 4px solid var(--color-black);
+  background: var(--color-lcd-bg);
+  outline: 2px dashed var(--color-black);
+  outline-offset: -6px;
+}
+
+/* ==========================================================================
+   ANIMATIONS & EFFECTS
+   ========================================================================== */
+@keyframes cabinet-shake {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-2px, 1px); }
+  50% { transform: translate(2px, -1px); }
+  75% { transform: translate(-1px, 2px); }
+  100% { transform: translate(0, 0); }
+}
+
+.anim-shake {
+  animation: cabinet-shake 0.15s steps(2) infinite;
+}
+
+@keyframes token-insert {
+  0% { transform: translateY(-40px); opacity: 0; }
+  40% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(20px); opacity: 0; }
+}
+
+.anim-token-insert {
+  animation: token-insert 0.5s steps(4) forwards;
+}
+
+@keyframes burn-flicker {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.15) rotate(3deg); }
+}
+
+.anim-burn-flicker {
+  animation: burn-flicker 0.9s steps(4) infinite;
+}
+
+@keyframes prize-rise {
+  0% { transform: translateY(40px) scale(0.8); opacity: 0; }
+  70% { transform: translateY(-5px) scale(1.02); opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.anim-prize-rise {
+  animation: prize-rise 0.5s steps(4) forwards;
+}
+
+@keyframes marquee-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.anim-blink {
+  animation: marquee-blink 1s steps(1) infinite;
+}
+
+/* ==========================================================================
+   SHELL-SPECIFIC PULL FX (monochrome, stepped, pixel-consistent)
+   CLASSIC keeps anim-shake (drum). Other shells animate inside the LCD.
+   ========================================================================== */
+@keyframes claw-drop {
+  0% { transform: translateY(-30px); }
+  45% { transform: translateY(30px); }
+  60% { transform: translateY(30px); }
+  100% { transform: translateY(-30px); }
+}
+
+.anim-claw-drop {
+  animation: claw-drop 2.8s steps(28) infinite;
+}
+
+@keyframes reel-spin {
+  from { transform: translateY(0); }
+  to { transform: translateY(-128px); }
+}
+
+.anim-reel-spin {
+  animation: reel-spin 1.2s steps(8) infinite;
+}
+
+@keyframes crank-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.anim-crank-spin {
+  animation: crank-spin 1.6s steps(16) infinite;
+  transform-origin: 50% 50%;
+}
+
+@keyframes mini-hop {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-5px); }
+  55% { transform: translateY(1px); }
+}
+
+.anim-mini-hop {
+  animation: mini-hop 1.2s steps(6) infinite;
+}
+
+/* ==========================================================================
+   SHELL SILHOUETTES (subtle structural variants, same hardware language.
+   No rounded domes anywhere — every edge stays hard pixel geometry.)
+   ========================================================================== */
+.cabinet-shell-capsule .cabinet-header {
+  border-bottom-width: 5px;
+}
+
+.cabinet-shell-tallboy .cabinet-lcd-screen {
+  min-height: 230px;
+}
+
+.cabinet-shell-mini {
+  max-width: 300px;
+}
+
+/* Reduced Motion Override — OS-level only. No user-facing motion toggle.
+   Normal users get FULL PIXEL MACHINE ANIMATION; OS reduced-motion gets a
+   SHORTENED animation that still preserves PULL -> MACHINE ACTION -> RESULT. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ==========================================================================
+   PULL STAGE — AUTHORITATIVE MACHINE-FIRST REVEAL ARCHITECTURE
+   Consistent animation area; no layout shift idle -> pull -> reveal -> idle.
+   ========================================================================== */
+.pull-stage {
+  min-height: 340px;
+}
+
+.pull-stage-body {
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.pull-focus {
+  outline: 2px dashed var(--color-black);
+  outline-offset: 4px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.rf-token-icon {
+  image-rendering: pixelated;
+}
+
+/* RF reveal: coin rises 4-8px, 1-2px bounce. No smooth spin. */
+@keyframes rf-reveal-rise {
+  0% { transform: translateY(8px); }
+  60% { transform: translateY(-2px); }
+  80% { transform: translateY(1px); }
+  100% { transform: translateY(0); }
+}
+
+.rf-reveal-rise {
+  animation: rf-reveal-rise 0.7s steps(4) forwards;
+  position: relative;
+}
+
+/* $RF coin reveals carry NO shine overlay. Grey/white glint marks sat
+   right against the coin's stepped silhouette and warm off-white face
+   and made the token look speckled, so the reveal presents the coin
+   clean. The former .rf-sparkle-* spans and the PixelShine overlay were
+   both removed; PixelShine remains for NFT reveals and the SVG pull
+   stages only. */
+
+/* Burn fragments: small $RF breaks into 4-8 square pixels then disappears. */
+.burn-fragments {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.burn-frag {
+  width: 4px;
+  height: 4px;
+  background: var(--color-black);
+  display: inline-block;
+}
+
+@keyframes burn-frag-fade {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(4px); }
+}
+
+.burn-frag-1 { animation: burn-frag-fade 1.2s steps(3) infinite; }
+.burn-frag-2 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.15s; }
+.burn-frag-3 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.3s; }
+.burn-frag-4 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.45s; }
+
+/* ==========================================================================
+   NAVIGATION & HEADER
+   ========================================================================== */
+.arcade-header {
+  background: var(--color-white);
+  border-bottom: 3px solid var(--color-black);
+  padding: 12px 20px;
+}
+
+.arcade-nav-tab {
+  font-family: var(--font-lcd);
+  font-size: 13px;
+  padding: 8px 14px;
+  border: 2px solid var(--color-black);
+  background: var(--color-white);
+  color: var(--color-black);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.arcade-nav-tab:hover {
+  background: var(--color-lcd-dim);
+}
+
+.arcade-nav-tab-active {
+  background: var(--color-black);
+  color: var(--color-white);
+}
+
+/* ==========================================================================
+   TABLES & DATA
+   ========================================================================== */
+.pixel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pixel-table th {
+  background: var(--color-black);
+  color: var(--color-white);
+  font-family: var(--font-lcd);
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: normal;
+}
+
+.pixel-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-gray-light);
+}
+
+.pixel-table tr:hover td {
+  background: var(--color-lcd-dim);
+}
+
+/* ==========================================================================
+   RESPONSIVE UTILITIES
+   ========================================================================== */
+@media (max-width: 640px) {
+  .cabinet-container {
+    max-width: 100%;
+  }
+
+  .sim-banner {
+    flex-direction: column;
+    gap: 4px;
+    text-align: center;
+  }
+}

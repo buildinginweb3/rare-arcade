@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test / QA artifacts (regenerate with `npm test`, `npm run test:e2e`, `npm run test:fx`)
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+coverage/
+
+# Local QA screenshot output (regenerate with `npm run test:fx`)
+screenshots/
+
+# Secrets — never commit. Only .env.example is tracked.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log
+npm-debug.log*
