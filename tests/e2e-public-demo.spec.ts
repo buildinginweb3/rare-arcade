@@ -12,14 +12,17 @@
 import { test, expect } from '@playwright/test';
 
 const DEMO = process.env.BASE_URL;
-if (!DEMO) {
-  throw new Error('Set BASE_URL to the deployed demo URL.');
-}
+
 // Pages hosts this app under a subpath, so every navigation must stay
 // relative to it (a leading-slash URL would resolve to the domain root).
 test.use({ baseURL: DEMO });
 
-test('public demo: fresh visitor can browse machines and see real copy', async ({ page }) => {
+// Opt-in: this suite targets a deployed URL, so it is skipped during a
+// normal local run rather than failing the default `npx playwright test`.
+test.describe('deployed public demo', () => {
+  test.skip(!DEMO, 'Set BASE_URL to the deployed demo URL to run this suite.');
+
+  test('public demo: fresh visitor can browse machines and see real copy', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
@@ -42,7 +45,7 @@ test('public demo: fresh visitor can browse machines and see real copy', async (
   expect(bad, `console/page errors:\n${bad.join('\n')}`).toEqual([]);
 });
 
-test('public demo: a pull resolves and RF accounting updates', async ({ page }) => {
+  test('public demo: a pull resolves and RF accounting updates', async ({ page }) => {
   await page.goto('./');
   const play = page.locator('button:has-text("PLAY ARCADE")');
   if (await play.isVisible().catch(() => false)) await play.click();
@@ -67,9 +70,9 @@ test('public demo: a pull resolves and RF accounting updates', async ({ page }) 
 
   const after = await readBalance();
   expect(after, 'RF balance decreases by the pull price').toBeLessThan(before as number);
-});
+  });
 
-test('public demo: creator workshop is reachable and publishes a machine', async ({ page }) => {
+  test('public demo: creator workshop is reachable and publishes a machine', async ({ page }) => {
   await page.goto('./');
   const play = page.locator('button:has-text("PLAY ARCADE")');
   if (await play.isVisible().catch(() => false)) await play.click();
@@ -100,9 +103,9 @@ test('public demo: creator workshop is reachable and publishes a machine', async
   // And it appears in the arcade floor.
   await page.locator('nav button:has-text("ARCADE")').click();
   await expect(page.getByText('PUBLIC DEMO MACHINE').first()).toBeVisible();
-});
+  });
 
-test('public demo: mobile viewport works without horizontal overflow', async ({ page }) => {
+  test('public demo: mobile viewport works without horizontal overflow', async ({ page }) => {
   for (const width of [360, 390, 430]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('./');
@@ -113,4 +116,5 @@ test('public demo: mobile viewport works without horizontal overflow', async ({ 
     );
     expect(overflow, `overflow at ${width}px`).toBeLessThanOrEqual(1);
   }
+  });
 });
