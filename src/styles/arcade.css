@@ -473,24 +473,6 @@ h1, h2, h3, .pixel-title {
   justify-content: center;
 }
 
-/*
- * "Pull in progress" affordance for the cabinet.
- *
- * Previously this was `outline: 2px dashed; outline-offset: 4px`, which
- * painted a large detached dashed rectangle around the whole cabinet for
- * the duration of every pull. It read as a broken selection marquee or a
- * rendering artefact rather than as a state change, and the positive
- * outline offset made it float outside the machine it was meant to
- * describe.
- *
- * An inset box-shadow keeps the indicator attached to the cabinet, causes
- * no layout shift, and matches the app's chunky solid-border pixel style.
- * Dashed/dotted outlines are reserved for genuine focus indicators.
- */
-.pull-focus {
-  box-shadow: inset 0 0 0 3px var(--color-black);
-}
-
 .sr-only {
   position: absolute;
   width: 1px;

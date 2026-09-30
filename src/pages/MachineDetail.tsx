@@ -309,8 +309,19 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
           alignItems: 'start',
         }}
       >
-        {/* Left: Pixel Cabinet View */}
-        <div className={isPulling ? 'pull-focus' : ''}>
+        {/*
+          Left: Pixel Cabinet View.
+
+          No wrapper styling here on purpose. This container used to gain a
+          "pull-focus" class while pulling, which drew a frame around the
+          whole machine (first a dashed outline with a positive offset,
+          then a solid inset box-shadow). Both read as a stray box popping
+          up around the cabinet on every pull, so the indicator is gone.
+          The pull state is already communicated by the "PULLING..." button
+          label, the "PULL IN PROGRESS" activity panel, and the
+          aria-live region below.
+        */}
+        <div>
           <CabinetView
             machine={displayMachine}
             onPull={handlePull}
