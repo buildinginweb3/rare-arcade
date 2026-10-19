@@ -29,8 +29,8 @@ The create wizard is the whole marketplace:
   It must sit between 70% and 105%.
 
 Limits: up to 16 Friends and 8 USDG lines per machine, 20 copies per USDG line,
-100,000 USDG of total stocked value, 12 active machines per creator and 120 on
-the floor.
+100,000 USDG of total stocked value, 12 machines per creator (cancelled ones
+free a slot) and 120 live or sold-out machines on the floor.
 
 A creator can pause and resume a machine, collect its receipts at any time, or
 cancel it **before the first pull** to get the remaining USDG and the stocked

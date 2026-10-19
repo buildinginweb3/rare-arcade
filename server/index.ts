@@ -85,7 +85,7 @@ function readIndex(ctx: AnyContext): string[] {
 }
 
 function writeIndex(ctx: AnyContext, ids: readonly string[]): void {
-  ctx.shared.set(INDEX_KEY, ids.slice(0, MAX_TOTAL_MACHINES));
+  ctx.shared.set(INDEX_KEY, [...ids]);
 }
 
 function readClaimIndex(ctx: AnyContext): string[] {
@@ -289,6 +289,10 @@ function activeMachineCount(ctx: AnyContext): number {
   return readMachines(ctx).filter((machine) => machine.creatorId === ctx.friend.id && machine.status !== "cancelled").length;
 }
 
+function floorMachineCount(ctx: AnyContext): number {
+  return readMachines(ctx).filter((machine) => machine.status !== "cancelled").length;
+}
+
 function selectedMachine(ctx: AnyContext): Machine {
   const selection = ctx.data.get<Snapshot["selection"]>(SELECTION_KEY);
   if (!selection?.machineId) throw new GameError("Choose a machine first.");
@@ -413,6 +417,9 @@ export default defineGame({
 
     /** Validate the create wizard and keep its draft until the contract opens it. */
     savedraft(ctx, input) {
+      if (floorMachineCount(ctx) >= MAX_TOTAL_MACHINES) {
+        throw new GameError("The arcade floor is full.");
+      }
       const count = activeMachineCount(ctx);
       if (count >= MAX_MACHINES_PER_CREATOR) {
         throw new GameError(`You already have ${MAX_MACHINES_PER_CREATOR} machines on the floor.`);
@@ -456,6 +463,9 @@ export default defineGame({
 
   intents: {
     createMachine(ctx) {
+      if (floorMachineCount(ctx) >= MAX_TOTAL_MACHINES) {
+        throw new GameError("The arcade floor is full.");
+      }
       if (activeMachineCount(ctx) >= MAX_MACHINES_PER_CREATOR) {
         throw new GameError(`You already have ${MAX_MACHINES_PER_CREATOR} machines on the floor.`);
       }
