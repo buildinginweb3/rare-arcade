@@ -1,303 +1,154 @@
 # RARE ARCADE
 
-Turn the NFTs you already hold into creator-run prize machines where every pull
-is priced and paid in **USDG**, charges a **5% platform fee** to Rare Arcade
-treasuries, and uses live OpenSea top bids to price NFT prizes transparently.
+A FriendSDK 1.0 game for the Rare Friends arcade.
 
-**[Live demo →](https://buildinginweb3.github.io/rare-arcade/)**
+Pull a cabinet for **RF**. Every pull is settled on chain from platform
+randomness, so the outcome is fixed before your transaction is sent and cannot
+be chosen, replayed or read ahead of time by the browser.
+
+Win a **Rare Friend** and it is held by your Friend's wallet, backed by RF you
+can claim — or you can keep the Friend and never touch the backing. Your
+choice, and the odds are published before you pull.
 
 ---
 
-## What it is
+## The cabinet
 
-Rare Arcade is a **creator-built prize-machine marketplace played in USDG**.
-Instead of one developer controlling a single prize pool, anyone can build a
-*Friend Machine* from assets they already hold, configure its economics, and
-publish it for other players to pull.
-
-```
-USDG / NFTs / RF YOU ALREADY HOLD
-        ↓
-  MACHINE INVENTORY
-        ↓
-  TRANSPARENT MACHINE ECONOMICS
-        ↓
-  PLAYERS SPEND USDG
-        ↓
-  5% PLATFORM FEE (75% TREASURY / 25% RF BUYBACK)  +  95% CREATOR RECEIPTS
-        ↓
-  HOLDINGS NOW DO SOMETHING
-```
-
-The asset holder becomes the machine operator.
-
-## Why USDG
-
-**USDG (Global Dollar)** — `0x5fc5360d0400a0fd4f2af552add042d716f1d168` on
-Robinhood Chain — is the only currency a pull can be paid in.
-
-- It is a Paxos-issued stablecoin redeemable 1:1 for US dollars, so the arcade's
-  economics stay predictable instead of swinging with a volatile token.
-- 6 decimals on-chain, matched exactly by the app's internal unit scale, so
-  amounts cross the contract boundary with no rounding.
-- The 1:1 peg means an NFT's USD top bid **is** its USDG prize value — no price
-  feed, no drift in a published machine's RTP.
-
-`$RAREFRIENDS` is still a first-class part of the loop, just not the play
-currency: creators can load a machine with **RF cashback on top of USDG
-cashback**, and each RF prize locks its USDG value at seed time so published RTP
-can never move with the RF market.
-
-## Two machine models
-
-| | Finite Deck | Fixed Odds |
-|---|---|---|
-| Play cap | Fixed ticket count | None |
-| Odds | Shifts as inventory depletes | Each prize keeps its configured probability |
-| Sold-out slot | — | Becomes an empty outcome; probability is **not** redistributed |
-| Ends when | Tickets run out | All prize inventory is exhausted |
-
-Both models publish their exact odds, RTP, and prize inventory **before** a
-player pulls.
-
-## Pausing a machine & withdrawing escrow
-
-A machine's **vault** is the prize escrow still locked inside it. Once a machine
-starts selling, some of that escrow is often never won — so the creator can get
-it back:
-
-| Action | Effect |
+| | |
 |---|---|
-| **Pause** | Suspends pulls. Touches **no** escrow — every prize stays exactly where it is. Free and fully reversible. |
-| **Resume** | Puts pulls back on sale. The machine is bit-for-bit what it was before the pause. |
-| **Withdraw escrow & close** | Returns the **entire** remaining vault to the creator in its original currencies, then closes the machine permanently. |
+| Pull price | 10 RF |
+| Platform fee | 5%, taken in three places |
+| Currency | RF |
 
-Rules that keep this honest:
+**Outcomes**
 
-- **Withdrawal requires a prior pause** — winding a live machine down is a
-  deliberate two-step, not a stray click.
-- **All-or-nothing.** There is no partial withdrawal, because pulling some
-  prizes out mid-game would silently rewrite live RTP and odds.
-- **Only unused escrow comes back.** The refund is computed from what is
-  *remaining*, never from the published prize list, so a prize a player already
-  won can never be refunded twice.
-- **The rules lock survives.** Published odds, `initialPrizes` and RTP are never
-  rewritten. Players keep everything they won.
-- **Players can't pull a paused machine,** and the arcade floor shows `PAUSED`
-  with the pause date instead of a play price.
-- **The vault breakdown is public.** Anyone viewing a machine sees what is still
-  locked in it; only the creator's controls are gated. A creator is defined as
-  the address that funded the machine plus any matching connected wallet.
-- **Withdrawing frees the NFT.** A returned Rare Friend stops being reserved and
-  can immediately be funded into another machine.
-- **The buyback pot is untouched.** It is funded from platform fees, not prize
-  escrow, so a withdrawal never reaches it.
-
-Full rules, formulas and the cancel-vs-withdraw comparison: §7b of
-`ECONOMY_SPEC.md`. Implementation: `src/domain/vault.ts`.
-
-## The platform fee and the RF buyback
-
-Every pull splits the USDG spend **5% platform fee / 95% creator receipts**. The
-fee itself splits two ways:
-
-| Share | Destination |
+| Outcome | What you get |
 |---|---|
-| **75%** of the fee | Treasury — `0x927A1799125EAE57B6BDc573Ee5e0354cD343Db1` |
-| **25%** of the fee | **Buys $RAREFRIENDS and burns them** at `0x…dEaD` |
+| No prize | Nothing. The most common result. |
+| Cashback | 19 RF. The gross was 20 RF. |
+| Generations Friend | A Rare Friend backed by 20 RF — keep it, or claim 19 RF. |
+| Genesis Friend | A Genesis Rare Friend backed by 100 RF — keep it, or claim 95 RF. |
 
-The 25% share accrues **in USDG** into a platform-wide buyback pot. On a
-schedule, the whole pot is swapped USDG → RF on an AMM pool on Robinhood Chain
-and the acquired RF is sent to the burn address.
+**The 5% fee** is charged on your spend, on a cashback win, and on backing you
+choose to claim. Tokens you put in a cabinet need no backing — they pay
+themselves.
 
-**Why this keeps player economics stable:** the pot stays denominated in USDG
-right up to the moment a batch executes — long after the pull that funded it. A
-player is charged 5% of their spend in USDG regardless of what RF is doing, and
-no published RTP depends on an RF price. RF volatility only affects how much RF
-a given buyback yields, never what a player paid.
+**RTP is a function of your Friend's generation.** Generation 1 is the rarest
+Friend and plays the best table; generation 6 the worst. Your odds are fixed
+before you play, not before you pull.
 
-**Why batched:** a per-pull swap would pay AMM fees on a tiny trade and take
-slippage out of proportion to size. Batching means fewer, larger, cheaper swaps
-and a much smaller per-pull MEV surface. The cost is that the burn lags the
-revenue funding it. The demo models a 1% adverse fill so displayed burn values
-understate rather than overstate what a perfect fill would yield.
+| Generation | RTP |
+|---|---|
+| 1 | 95.00% |
+| 2 | 93.67% |
+| 3 | 92.34% |
+| 4 | 91.01% |
+| 5 | 89.68% |
+| 6 | 88.35% |
 
-Totals are tracked per machine (`buybackFeeUnits`) and platform-wide
-(`buyback` ledger), because the pot is pooled — one machine's contribution can
-be burned before its own pulls finish.
+---
 
-## Prize currencies
+## One source of truth for the economy
 
-A machine can hold USDG cashback, RF cashback, or both — plus NFTs. Everything is
-*accounted* in USDG so RTP stays exact regardless of what a player is actually
-paid:
-
-| Prize line | Paid in | Valued at |
-|---|---|---|
-| `USDG_PRIZE` | USDG | face value |
-| `RF_PRIZE` | RF | USDG value locked at seed time |
-| `FRIEND_PRIZE` | the NFT | USD top bid, 1:1 with USDG |
-
-## OpenSea valuation
-
-Creators never hand-guess "this NFT is worth 20,000 RF." Rare Arcade reads
-OpenSea market data and derives an RF reference automatically:
+`client/lib/economy.json` holds every number: the pull price, the fee, the
+per-generation weights, the backing and what a claim pays.
 
 ```
-collection top-bid USD  =  USDG reference value      (USDG is pegged 1:1 to USD)
+client/lib/economy.json  ──►  scripts/gen-manifest.mjs  ──►  friendsdk.json
+        │                                                        │
+        │ (imported by the client)                               │ (settled on chain)
+        ▼                                                        ▼
+   odds the arcade publishes                            what the keeper pays out
 ```
 
-Notes:
-
-- OpenSea offer `price.value` is the **total order amount**. For bulk/criteria
-  bids covering many tokens, Rare Arcade divides by the NFT consideration
-  quantity first — otherwise a 25-token bid reads ~25× too high.
-- Rare Friends **Generations** are valued generation-aware via trait offers
-  where the data is available, with documented fallbacks.
-- There is no token price feed in the valuation path at all, so an RF price move
-  can no longer revalue an already-published machine.
-- The valuation basis is the **highest active offer (top bid)**, not a floor
-  price. The resulting market reference is a **reference used by the economics
-  model, not a guaranteed sale value** for an individual NFT, and not the amount a
-  creator can expect to realise.
-- Valuation snapshots are locked at publish time, so live market moves cannot
-  mutate a published machine's RTP or EV.
-
-## Robinhood Chain only
-
-Settlement is single-chain (Robinhood, ID 4663). Only NFTs on that chain can be
-funded into a machine, which was chosen deliberately:
-
-- **One contract surface.** One escrow vault, one fee router, one VRF
-  subscription. Multi-chain support would multiply both the contracts and the
-  failure modes.
-- **One ownership truth.** Every prize NFT — not just Rare Friends — is verified
-  with the same fresh on-chain `ownerOf` read against the public RPC. Nothing
-  depends on trusting an indexer's ownership response.
-- **No per-chain escrow branch.** `PrizePool.fundNftPrize` and `MachineRegistry`
-  take a single chain, so there is no cross-chain settlement path to get wrong.
-
-The gate lives in `src/domain/settlement.ts` and is enforced inside both machine
-constructors, so a cross-chain prize cannot reach a published machine even if it
-somehow entered the picker.
-
-## Cabinet presentation
-
-| Shell | Ritual |
-|---|---|
-| CLASSIC | Prize Drum |
-| CAPSULE | Capsule Open |
-| TALLBOY | Claw Grab |
-| MINI | Slot Reels |
-
-Presentation and personalisation only — all shells share identical economics.
-
-## Run it locally
-
-Requires **Node.js 20+**.
+The generator refuses to write a manifest whose weights do not sum to 10000, and
+it prints the RTP of every generation table as it goes. What the cabinet shows
+and what the chain settles cannot drift apart, because there is only one file.
 
 ```sh
-git clone https://github.com/buildinginweb3/rare-arcade.git
-cd rare-arcade
-npm ci
-npm run dev
+npm run manifest         # regenerate friendsdk.json
+npm run manifest:check   # fail if friendsdk.json is stale (run in CI)
 ```
 
-Open the printed URL (normally `http://localhost:4173`).
+---
 
-**No wallet is required to try the seeded player demo.** Connecting a wallet is
-only used when testing creator NFT discovery/ownership against Robinhood mainnet.
+## Run it
 
-### Commands
+Requires **Node.js 22 or later**.
 
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Dev server on port 4173 |
-| `npm run build` | Typecheck (`tsc --noEmit`) + production build |
-| `npm test` | Vitest unit + economics + valuation suites |
-| `npm run test:e2e` | Playwright end-to-end (chromium + mobile) |
-| `npm run test:fx` | Deterministic pull-FX / token / UI screenshot QA |
-| `npm run check:live` | Read-only live OpenSea + RPC integration check |
+```sh
+npm install
+npm run dev        # simulated website, chain, keeper and server on :4173
+```
 
-## Going live
+`friendsdk dev` mounts the game exactly as the website does, with fixture
+Friends, a simulated Robinhood Chain and a local keeper. Every pull, claim and
+settlement works without a wallet, an account or a deployed contract. The dev
+panel can hold randomness, take the keeper offline, force a draw row and set the
+prize pool, so the failure paths are reachable without deploying anything.
 
-`src/web3/contracts.ts` is the contract registry and the single switch between
-demo and live. Only USDG is deployed today; everything else is an explicit
-`0xTODO`, and `RARE_ARCADE_MODE` stays `'demo'` until they are filled in. The
-app header shows a **CONTRACTS** panel with exactly what is still missing.
+```sh
+npm run check      # manifest + code validation, then a full typecheck
+npm run build      # regenerate the manifest and write .friendsdk/build
+```
 
-Typed interfaces for every call live in `src/web3/contracts.types.ts`.
-`src/web3/usdgClient.ts` implements **reads only** — `approve()` and
-`transfer()` throw on purpose, so the app cannot appear to move funds it cannot
-actually move. The 5% / 75% / 25% split in `src/domain/fees.ts` is the
-specification the deployed `feeRouter` must reproduce exactly; there is a test
-asserting the registry cannot drift from it.
+---
 
-On WSL2 without sudo, Playwright's shared libraries may need
-`npx playwright install-deps chromium` or the documented LD_LIBRARY_PATH
-workaround (see README section 5).
+## What is in the box
 
-## Tech stack
+```
+friendsdk.json                  the economy, generated — do not hand-edit
+client/
+  main.tsx                      entry: FriendSession, fonts, stylesheet
+  screens/Arcade.tsx            the cabinet, the reveal, the prize panel
+  lib/economy.json              the single source of truth
+  lib/economy.ts                typed accessors and derived odds/RTP
+  arcade/PixelPullFx.tsx        the pull ritual (drum, capsule, claw, reels)
+  ui/FriendSprite.tsx           the Friend, drawn from its on-chain artwork
+server/
+  index.ts                      pull count and the leaderboard
+scripts/gen-manifest.mjs        economy.json -> friendsdk.json
+```
 
-- **FriendSDK:** No — Rare Arcade is a web app, not an SDK game.
-- React 19 · TypeScript · Vite 6
-- OpenSea API v2 (`robinhood` chain) + public Robinhood Chain RPC
-- Vitest · Playwright
+The server rules deliberately hold **no** economy. Odds, RTP and backing live in
+`economy.json`; server state is only the arcade's record of how many pulls a
+Friend has made. A second copy of the economy on the server is a second copy
+that can be wrong.
 
-## Real vs simulated
+### Art
 
-**Real / read-only**
+All Rare Arcade pixel artwork is original to this project and drawn in code as
+SVG: the pull rituals, the `$RF` coin, the 16×16 icon set and the pixel palette
+in `client/ui/pixelPalette.ts`. The Friend itself is not drawn by this game — it
+is the player's own on-chain artwork, decoded from the 64 frames the platform
+supplies.
 
-- Connected wallet address
-- NFT ownership where verified on-chain via `ownerOf`
-- NFT metadata and artwork
-- Collection identity
-- OpenSea market data
-- The USDG token address and its on-chain 6-decimal precision
+Fonts are Press Start 2P and Silkscreen (SIL Open Font License), bundled from
+`@fontsource` rather than loaded from a font CDN, because the arcade's Content
+Security Policy allows assets from the game origin only. Every sound effect is
+synthesised at runtime with the Web Audio API; no audio files are shipped.
 
-**Simulated**
+---
 
-- USDG and RF balances
-- Machine funding, pull spend, 5% platform fee routing, creator receipts
-- NFT machine funding, escrow, and prize payout
+## Open question for Rare Friends
 
-Rare Arcade requests **no** NFT, USDG, or RF approvals, **no** transfers, and
-**no** transaction signatures. Read-only ownership checks are not escrow.
+**Does a Friend that has been activated on rarefriends.com stay activated if it
+is won in a cabinet?**
 
-## Known limitations
+In this build the answer is not ours to give. A cabinet prize is a FriendSDK
+item bound to the Friend wallet, minted by the draw and redeemable for its
+backing. This game never holds, transfers or deactivates a Rare Friends NFT: it
+only mints and burns an in-game item. If activation is a property of the original
+NFT, nothing here can affect it — but nothing here can confirm it either, because
+the game has no chain access of its own.
 
-- Balances, spend, fee routing, receipts, NFT escrow and payout are all
-  simulated in browser state; no live contracts are deployed yet.
-- State persists in `localStorage` (`rare-arcade:v1`) on the current browser
-  only. There is no server, accounts, or cross-device sync.
-- Live NFT discovery and valuation depend on OpenSea availability and rate
-  limits. A read-only public demo key ships in the client bundle so the demo
-  works with no setup; it is rotatable and rate-limited.
-- NFT discovery and pricing are OpenSea-driven, but ownership is verified
-  on-chain. A Robinhood NFT that OpenSea does not index will not appear in the
-  picker even though it could be verified.
-- Production on-chain escrow, VRF, and real settlement are future work, not
-  shipped. See **Going live** below and §16 of `ECONOMY_SPEC.md`.
-- The vault's pause and withdrawal are simulated like the rest of the platform:
-  the state machine, refund math and audit trail are real, but no on-chain
-  escrow contract is deployed to claw funds back from.
+If the answer turns out to be no, the fix is an `external` lane whose contract
+Rare Friends write, which would enforce it on the way out of the cabinet. That is
+not in this version.
 
-## Asset credits & licences
+---
 
-- **Rare Friends** — NFT names, artwork and metadata belong to Rare Friends.
-  Live NFT art is fetched from the collection's OpenSea metadata; the 16×16
-  pixel sprite fallback is original Rare Arcade code (`src/data/demoFriends.ts`,
-  `src/components/ui/RareFriendSprite.tsx`).
-- **OpenSea** — NFT discovery, collection identity, metadata, artwork and
-  market data via the public [OpenSea API v2](https://docs.opensea.io/).
-- **Robinhood Chain** — read-only JSON-RPC for `ownerOf` ownership
-  verification (chain ID 4663). No writes, no transactions.
-- **Fonts** — [Press Start 2P](https://fonts.google.com/specimen/Press+Start+2P)
-  and [Silkscreen](https://fonts.google.com/specimen/Silkscreen), via Google
-  Fonts (SIL Open Font License).
-- **Audio** — all sound effects are synthesised at runtime with the Web Audio
-  API (`src/utils/audio.ts`). No sampled audio files are bundled.
-- **All Rare Arcade pixel artwork** (cabinets, `$RF` coin, icons, pull FX) is
-  original to this project and defined in code as SVG.
+## Licence
 
-Visual system and art direction: [`ART_BIBLE.md`](ART_BIBLE.md).
+FriendSDK is Apache-2.0 and is installed as a development dependency; the
+platform runs the contracts, the server and the payments.

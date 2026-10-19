@@ -28,3 +28,6 @@ Thumbs.db
 *.swp
 *.log
 npm-debug.log*
+
+# FriendSDK build + dev state (recreate with: friendsdk build / friendsdk dev)
+.friendsdk/

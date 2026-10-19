@@ -1,0 +1,158 @@
+{
+  "id": "rare-arcade",
+  "title": "Rare Arcade",
+  "version": "0.1.0",
+  "client": "client/main.tsx",
+  "server": "server/index.ts",
+  "currency": "RF",
+  "display": {
+    "minAspectRatio": "9:16",
+    "maxAspectRatio": "21:9"
+  },
+  "items": {
+    "genFriend": {
+      "name": "Generations Friend",
+      "description": "A Generations Rare Friend held in a cabinet, backed by 20 RF. Claim the backing for 19 RF, or keep the Friend.",
+      "redeemValue": "19"
+    },
+    "genesisFriend": {
+      "name": "Genesis Friend",
+      "description": "A Genesis Rare Friend held in a cabinet, backed by 100 RF. Claim the backing for 95 RF, or keep the Friend.",
+      "redeemValue": "95"
+    }
+  },
+  "actions": {
+    "pull": {
+      "type": "draw",
+      "label": "Pull the lever",
+      "description": "One pull of a Rare Arcade cabinet. Costs 10 RF. The arcade takes a 5% platform fee from your spend, from every cashback win, and from any backing you claim.",
+      "price": "10",
+      "maxQuantity": 1,
+      "perGeneration": {
+        "1": [
+          {
+            "weight": 6200
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 500,
+            "item": "genFriend"
+          },
+          {
+            "weight": 300,
+            "item": "genesisFriend"
+          }
+        ],
+        "2": [
+          {
+            "weight": 6230
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 480,
+            "item": "genFriend"
+          },
+          {
+            "weight": 290,
+            "item": "genesisFriend"
+          }
+        ],
+        "3": [
+          {
+            "weight": 6260
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 460,
+            "item": "genFriend"
+          },
+          {
+            "weight": 280,
+            "item": "genesisFriend"
+          }
+        ],
+        "4": [
+          {
+            "weight": 6290
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 440,
+            "item": "genFriend"
+          },
+          {
+            "weight": 270,
+            "item": "genesisFriend"
+          }
+        ],
+        "5": [
+          {
+            "weight": 6320
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 420,
+            "item": "genFriend"
+          },
+          {
+            "weight": 260,
+            "item": "genesisFriend"
+          }
+        ],
+        "6": [
+          {
+            "weight": 6350
+          },
+          {
+            "weight": 3000,
+            "pays": "19"
+          },
+          {
+            "weight": 400,
+            "item": "genFriend"
+          },
+          {
+            "weight": 250,
+            "item": "genesisFriend"
+          }
+        ]
+      }
+    },
+    "claimGenFriend": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Generations Friend and receive 19 RF — 95% of the 20 RF that backed it. The arcade keeps 5%.",
+      "redeems": "genFriend",
+      "maxQuantity": 1
+    },
+    "claimGenesisFriend": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Genesis Friend and receive 95 RF — 95% of the 100 RF that backed it. The arcade keeps 5%.",
+      "redeems": "genesisFriend",
+      "maxQuantity": 1
+    }
+  },
+  "leaderboards": {
+    "pulls": {
+      "order": "desc",
+      "operator": "best",
+      "reset": "never"
+    }
+  }
+}
