@@ -1,6 +1,11 @@
 import type { MachineShellId, PrizeType } from '../../domain/types.ts';
 
 export type PullFxKind = 'drum' | 'capsule' | 'claw' | 'reels';
+/**
+ * 'rf' is the coin/cashback visual. It covers BOTH cashback currencies —
+ * USDG (the default) and $RAREFRIENDS — because they render the same pixel
+ * coin. Only the amount and symbol differ, which the reveal handles.
+ */
 export type PullFxResultKind = 'rf' | 'nft' | 'empty';
 
 export interface PullFx {
@@ -73,7 +78,7 @@ export function pullFxForShell(shellId: MachineShellId): PullFx {
  * tallboy parcel state). Never influences RNG or probability.
  */
 export function resultKindForPrizeType(prizeType: PrizeType | null | undefined): PullFxResultKind {
-  if (prizeType === 'RF_PRIZE') return 'rf';
+  if (prizeType === 'USDG_PRIZE' || prizeType === 'RF_PRIZE') return 'rf';
   if (prizeType === 'FRIEND_PRIZE') return 'nft';
   return 'empty';
 }

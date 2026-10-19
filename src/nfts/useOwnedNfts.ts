@@ -7,13 +7,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeAddress } from './collections.ts';
-import { KNOWN_EVM_CHAIN_IDS, defaultScanChains, orderChainsForScan } from './chains.ts';
-import { fetchOwnedRareFriends, verifyNftOwnerRemote, verifyNftOwnerGeneric } from './apiClient.ts';
+import {
+  SETTLEMENT_CHAIN_ID,
+  isFundableChain,
+  defaultScanChains,
+  orderChainsForScan,
+} from './chains.ts';
+import { fetchOwnedRareFriends, verifyNftOwnerRemote } from './apiClient.ts';
 import {
   fetchOwnedNftsAcrossChains,
   getCollectionTopBid,
   getGenerationTopBid,
-  getRareFriendsUsdPrice,
 } from './marketData.ts';
 import {
   normalizeGenericPage,
@@ -21,9 +25,9 @@ import {
   detectGenerationTrait,
   groupAndSortCollections,
 } from './normalize.ts';
-import { convertUsdToRfUnits } from './valuation.ts';
+import { convertUsdToUsdgUnits } from './valuation.ts';
 import { GENERATIONS_CONTRACT } from './collections.ts';
-import type { NftAsset, NftFetchState, RareFriendAsset, CollectionGroup } from './types.ts';
+import type { NftAsset, NftFetchState, CollectionGroup } from './types.ts';
 
 export function useOwnedNfts(walletAddress: string | null | undefined): {
   fetchState: NftFetchState;
@@ -79,37 +83,23 @@ export function useOwnedNfts(walletAddress: string | null | undefined): {
       if (normalizeAddress(ownerField) !== wallet || !wallet) {
         throw new Error('REVERIFY OWNER — wallet changed since discovery.');
       }
-      if (asset.isRareFriends && asset.chain.toLowerCase() === 'robinhood') {
-        const rare = asset as RareFriendAsset;
-        const contract = rare.contract ?? asset.contract;
-        const { owner } = await verifyNftOwnerRemote(contract, asset.tokenId);
-        if (normalizeAddress(owner) !== wallet) {
-          throw new Error('OWNERSHIP CHANGED — you no longer hold this NFT on-chain.');
-        }
-        return {
-          ...asset,
-          ownerAddress: wallet,
-          reportedOwner: wallet,
-          ownershipVerified: true,
-          verificationSource: 'onchain',
-        };
+      // Robinhood-only: every prize NFT is verified with the same fresh
+      // on-chain ownerOf read, so Rare Friends carry no special privilege.
+      if (!isFundableChain(asset.chain)) {
+        throw new Error(
+          `Rare Arcade funds Robinhood Chain NFTs only — "${asset.chain}" cannot be added to a machine.`
+        );
       }
-      const { owner, source } = await verifyNftOwnerGeneric({
-        chain: asset.chain,
-        contract: asset.contract,
-        tokenId: asset.tokenId,
-        wallet,
-        tokenStandard: asset.tokenStandard,
-      });
+      const { owner } = await verifyNftOwnerRemote(asset.contract, asset.tokenId);
       if (normalizeAddress(owner) !== wallet) {
-        throw new Error('OWNERSHIP CHANGED — you no longer hold this NFT.');
+        throw new Error('OWNERSHIP CHANGED — you no longer hold this NFT on-chain.');
       }
       return {
         ...asset,
         ownerAddress: wallet,
         reportedOwner: wallet,
         ownershipVerified: true,
-        verificationSource: source,
+        verificationSource: 'onchain',
       };
     },
     [wallet]
@@ -126,9 +116,6 @@ export interface PricedInventory {
   assets: NftAsset[];
   groups: CollectionGroup[];
   truncated: boolean;
-  rfUsd: string | null;
-  rfValuedAt: number | null;
-  rfUnavailable: boolean;
   pricingComplete: boolean;
   pricingPending: number;
   refreshedAt: number | null;
@@ -138,9 +125,6 @@ const EMPTY_PRICED: PricedInventory = {
   assets: [],
   groups: [],
   truncated: false,
-  rfUsd: null,
-  rfValuedAt: null,
-  rfUnavailable: false,
   pricingComplete: false,
   pricingPending: 0,
   refreshedAt: null,
@@ -242,9 +226,8 @@ function useMultiChainInventory(
           else setFetchState({ status: 'ready', assets, truncated: false });
           return;
         }
-        const chains = orderChainsForScan(
-          opts.chains ?? defaultScanChains()
-        );
+        // Only the settlement chain is ever scanned.
+        const chains = orderChainsForScan(opts.chains ?? defaultScanChains());
         const { byChain, truncated } = await fetchOwnedNftsAcrossChains(wallet, chains, {
           concurrency: 4,
         });
@@ -252,7 +235,7 @@ function useMultiChainInventory(
         const seen = new Set<string>();
         for (const chain of chains) {
           const raw = byChain[chain] ?? [];
-          const chainId = KNOWN_EVM_CHAIN_IDS[chain];
+          const chainId = SETTLEMENT_CHAIN_ID;
           // Rare-Friends path (exact contract allowlist) + generic path.
           const rares = normalizeInventoryPage(raw, wallet);
           for (const r of rares) {
@@ -301,7 +284,7 @@ function useMultiChainInventory(
   return { fetchState, reload, verifyAsset };
 }
 
-/** Price a full inventory: deduped collection + generation bids, one RF fetch. */
+/** Price a full inventory: deduped collection + generation top bids. */
 async function priceInventory(
   assets: NftAsset[],
   truncated: boolean
@@ -309,10 +292,6 @@ async function priceInventory(
   if (mockMode()) {
     return priceInventoryMock(assets, truncated);
   }
-  const rf = await getRareFriendsUsdPrice().catch(() => null);
-  const rfUsd = rf?.usdPrice ?? null;
-  const rfValuedAt = rf?.valuedAt ?? null;
-
   // Unique collection slugs → one top-bid request each (primary basis).
   const slugs = Array.from(new Set(assets.map((a) => a.collectionSlug)));
   const bidBySlug = new Map<string, { topBidUsd: string; bidNative?: string; bidCurrency?: string } | null>();
@@ -368,13 +347,8 @@ async function priceInventory(
       method: 'collection_top_bid' | 'rare_friends_generation_bid' | 'rare_friends_collection_bid_fallback',
       extra?: { traitType?: string; traitValue?: string; fallbackUsed?: boolean; bidLabel?: string }
     ) => {
-      if (!rfUsd) {
-        return {
-          ...a,
-          pricing: { state: 'rf_unavailable' as const, topBidUsd: bid.topBidUsd, valuedAt: Date.now() },
-        };
-      }
-      const ref = convertUsdToRfUnits(bid.topBidUsd, rfUsd);
+      // USDG is pegged 1:1 to USD, so the top bid IS the USDG value.
+      const ref = convertUsdToUsdgUnits(bid.topBidUsd);
       if (ref === null) {
         return { ...a, pricing: { state: 'unpriced' as const, valuedAt: Date.now() } };
       }
@@ -387,8 +361,7 @@ async function priceInventory(
           topBidUsd: bid.topBidUsd,
           bidNative: bid.bidNative,
           bidCurrency: bid.bidCurrency,
-          rfUsd,
-          referenceRfUnits: ref,
+          usdgValueUnits: ref,
           traitType: extra?.traitType,
           traitValue: extra?.traitValue,
           fallbackUsed: extra?.fallbackUsed ?? false,
@@ -438,9 +411,6 @@ async function priceInventory(
     assets: pricedAssets,
     groups: groupAndSortCollections(pricedAssets),
     truncated,
-    rfUsd,
-    rfValuedAt,
-    rfUnavailable: !rfUsd,
     pricingComplete: true,
     pricingPending: 0,
     refreshedAt: Date.now(),
@@ -449,22 +419,20 @@ async function priceInventory(
 
 /** Deterministic mock pricing for tests/offline demo. */
 async function priceInventoryMock(assets: NftAsset[], truncated: boolean): Promise<PricedInventory> {
-  const rfUsd = '0.002';
   const pricedAssets = assets.map((a) => {
     const topBidUsd = a.isRareFriends
       ? a.rareFriendsType === 'GENESIS'
         ? '1647'
         : '0.05'
       : '100';
-    const ref = convertUsdToRfUnits(topBidUsd, rfUsd) ?? 0n;
+    const ref = convertUsdToUsdgUnits(topBidUsd) ?? 0n;
     return {
       ...a,
       pricing: {
         state: 'priced' as const,
         method: 'collection_top_bid' as const,
         topBidUsd,
-        rfUsd,
-        referenceRfUnits: ref,
+        usdgValueUnits: ref,
         fallbackUsed: false,
         valuedAt: Date.now(),
         bidLabel: 'COLLECTION TOP BID',
@@ -475,9 +443,6 @@ async function priceInventoryMock(assets: NftAsset[], truncated: boolean): Promi
     assets: pricedAssets,
     groups: groupAndSortCollections(pricedAssets),
     truncated,
-    rfUsd,
-    rfValuedAt: Date.now(),
-    rfUnavailable: false,
     pricingComplete: true,
     pricingPending: 0,
     refreshedAt: Date.now(),

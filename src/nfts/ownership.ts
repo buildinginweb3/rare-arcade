@@ -28,7 +28,7 @@ export function nftAssetReservationKey(asset: Pick<NftAsset, 'chain' | 'contract
 }
 
 /**
- * Collect reservation keys of NFTs funded into LIVE/READY (non-sold-out,
+ * Collect reservation keys of NFTs funded into LIVE/READY/PAUSED (non-sold-out,
  * non-cancelled) local machines. Drafts reserve too when includeDrafts.
  */
 export function collectReservedNftKeys(
@@ -39,6 +39,20 @@ export function collectReservedNftKeys(
   for (const m of machines) {
     if (m.status === 'CANCELLED' || m.status === 'SOLD_OUT') continue;
     if (m.status === 'DRAFT' && !opts.includeDrafts) continue;
+    // A token the creator already withdrew from escrow is no longer the
+    // machine's to give, so it must stop reserving — otherwise a wound-down
+    // machine would keep its returned NFTs locked out of every other machine.
+    // `withdrawnQuantity` is only ever set on `remainingPrizes`, so the
+    // published `initialPrizes` snapshot alone would wrongly keep them booked.
+    const withdrawn = new Set(
+      m.remainingPrizes
+        .filter(
+          (e): e is Extract<typeof e, { type: 'FRIEND_PRIZE' }> =>
+            e.type === 'FRIEND_PRIZE' && (e.withdrawnQuantity ?? 0) > 0
+        )
+        .filter((e) => typeof e.chainId === 'number' && !!e.contractAddress)
+        .map((e) => nftReservationKey(e.chainId as number, e.contractAddress as string, e.tokenId.toString()))
+    );
     const entries = [...m.initialPrizes, ...m.remainingPrizes];
     for (const e of entries) {
       if (e.type !== 'FRIEND_PRIZE') continue;
@@ -46,9 +60,9 @@ export function collectReservedNftKeys(
       // Only genuinely funded real NFTs reserve. System-demo fixtures are
       // display-only public references (no escrow claim) and never block.
       if (e.origin !== 'real-nft') continue;
-      reserved.add(
-        nftReservationKey(e.chainId, e.contractAddress, e.tokenId.toString())
-      );
+      const key = nftReservationKey(e.chainId, e.contractAddress, e.tokenId.toString());
+      if (withdrawn.has(key)) continue;
+      reserved.add(key);
     }
   }
   return reserved;

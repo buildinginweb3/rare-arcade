@@ -5,17 +5,20 @@
  */
 
 import { RARE_ARCADE_DEMO_ECONOMY } from '../domain/demoEconomy.ts';
+import { emptyBuybackLedger, type BuybackLedger } from '../domain/buyback.ts';
+import { withEscrowTotals } from '../domain/vault.ts';
 import { createInitialDemoMachines } from './demoMachines.ts';
 import type {
   Machine,
   PlayerInventory,
   CreatorAccount,
   LedgerEvent,
+  RareFriendMetadata,
 } from '../domain/types.ts';
 
 export const STORAGE_KEY = 'rare-arcade:v1';
-export const STORAGE_VERSION = 4;
-export const FIXTURE_VERSION = 4;
+export const STORAGE_VERSION = 7;
+export const FIXTURE_VERSION = 7;
 
 export interface AppSettings {
   soundEnabled: boolean;
@@ -32,8 +35,17 @@ export interface AppSettings {
 }
 
 export interface AppState {
-  version: 4;
-  fixtureVersion: 4;
+  version: 7;
+  fixtureVersion: 7;
+  /**
+   * Platform-level RF buyback accounting.
+   *
+   * Unlike machine totals this is NOT derivable by summing machines: the 25%
+   * buyback share is pooled globally and spent in batches, so one machine's
+   * contribution can be burned before its own pulls finish. In live mode this
+   * mirrors what a deployment reads from FeeRouter burn events.
+   */
+  buyback: BuybackLedger;
   machines: Machine[];
   playerInventory: PlayerInventory;
   creatorAccount: CreatorAccount;
@@ -65,23 +77,26 @@ export function createInitialState(): AppState {
   const { machines, initialEvents } = createInitialDemoMachines();
 
   return {
-    version: 4,
-    fixtureVersion: 4,
+    version: 7,
+    fixtureVersion: 7,
     machines,
+    buyback: emptyBuybackLedger(),
     playerInventory: {
-      rfBalanceUnits: RARE_ARCADE_DEMO_ECONOMY.playerStartingBalanceUnits,
+      usdgBalanceUnits: RARE_ARCADE_DEMO_ECONOMY.playerStartingBalanceUnits,
+      rfBalanceUnits: 0n,
       wonFriends: [],
       pullHistory: [],
     },
     creatorAccount: {
       address: '0xDemoCreator4663',
-      rfBalanceUnits: RARE_ARCADE_DEMO_ECONOMY.creatorStartingBalanceUnits,
+      usdgBalanceUnits: RARE_ARCADE_DEMO_ECONOMY.creatorStartingBalanceUnits,
+      rfBalanceUnits: RARE_ARCADE_DEMO_ECONOMY.creatorStartingRfUnits,
       // Real-NFT flow: creator inventory comes from the connected wallet,
       // fetched directly from OpenSea in the client. No fake stand-ins
       // are seeded as "owned".
       ownedFriends: [],
       totalProceedsUnits: 0n,
-      totalBurnGeneratedUnits: 0n,
+      totalPlatformFeesGeneratedUnits: 0n,
       machinesCreatedCount: 0,
     },
     ledgerEvents: initialEvents,
@@ -180,9 +195,10 @@ export function migrateV2ToV3(old: Record<string, unknown>): AppState {
   }
 
   return {
-    version: 4,
-    fixtureVersion: 4,
+    version: 7,
+    fixtureVersion: 7,
     machines,
+    buyback: fresh.buyback,
     playerInventory: prev.playerInventory ?? fresh.playerInventory,
     creatorAccount: prev.creatorAccount ?? fresh.creatorAccount,
     ledgerEvents: Array.isArray(prev.ledgerEvents) ? prev.ledgerEvents : [],
@@ -211,8 +227,7 @@ export function stampLegacyValuation(machines: readonly Machine[]): Machine[] {
           source: 'legacy' as const,
           collectionSlug: p.collectionSlug ?? 'unknown',
           topBidUsd: '0',
-          rfUsd: '0',
-          referenceRf: p.referenceValueUnits.toString(),
+          referenceUsdg: (Number(p.usdgValueUnits) / 1_000_000).toString(),
           valuedAt: m.createdAt ?? Date.now(),
           fallbackUsed: false,
         },
@@ -248,9 +263,10 @@ export function migrateV3ToV4(old: Record<string, unknown>): AppState {
     Array.isArray(prev.machines) ? prev.machines : [...fresh.machines]
   );
   return {
-    version: 4,
-    fixtureVersion: 4,
+    version: 7,
+    fixtureVersion: 7,
     machines,
+    buyback: fresh.buyback,
     playerInventory: prev.playerInventory ?? fresh.playerInventory,
     creatorAccount: prev.creatorAccount ?? fresh.creatorAccount,
     ledgerEvents: Array.isArray(prev.ledgerEvents) ? prev.ledgerEvents : [],
@@ -260,6 +276,196 @@ export function migrateV3ToV4(old: Record<string, unknown>): AppState {
       activeRole: prev.settings?.activeRole === 'CREATOR' ? 'CREATOR' : 'PLAYER',
     },
   };
+}
+
+/**
+ * Migrate V4 → V5: the RF economy became a USDG economy.
+ *
+ * What changed and why a numeric translation is NOT attempted:
+ *   - The play currency changed from $RAREFRIENDS to USDG.
+ *   - The 5% burn became a 5% platform fee split 75/25 across two treasuries.
+ *   - NFT valuations moved from topBidUsd/rfUsd to a 1:1 USDG peg.
+ *
+ * Converting old RF-unit amounts into USDG would require picking an RF price
+ * and would silently rewrite every published RTP, which is exactly the kind of
+ * invisible revaluation this migration must not do. Instead we preserve what is
+ * currency-independent — display settings, the connected wallet, and any real
+ * Rare Friends the creator still owns — and re-seed machines, balances, and
+ * the ledger from the USDG fixtures.
+ */
+export function migrateV4ToV5(old: Record<string, unknown>): AppState {
+  const fresh = createInitialState();
+  const prev = old as unknown as {
+    settings?: Partial<AppSettings> & { reducedMotion?: boolean; motionEnabled?: boolean };
+    creatorAccount?: { ownedFriends?: RareFriendMetadata[]; machinesCreatedCount?: number };
+  };
+
+  // Real NFTs the creator had seeded are chain assets, not RF balances — keep
+  // them, but only once the new machines no longer reference them as prizes.
+  const keptFriends = Array.isArray(prev.creatorAccount?.ownedFriends)
+    ? prev.creatorAccount.ownedFriends
+    : [];
+
+  return {
+    ...fresh,
+    creatorAccount: {
+      ...fresh.creatorAccount,
+      // Machines were re-seeded, so any previously seeded NFT is free again —
+      // but only real (on-chain) NFTs are ever kept. Never fabricate ownership.
+      ownedFriends: keptFriends,
+      machinesCreatedCount: 0,
+    },
+    settings: {
+      ...fresh.settings,
+      ...stripLegacyMotionSetting((prev.settings ?? {}) as Record<string, unknown>),
+      activeRole: prev.settings?.activeRole === 'CREATOR' ? 'CREATOR' : 'PLAYER',
+      hasSeenOnboarding: prev.settings?.hasSeenOnboarding ?? false,
+    },
+  };
+}
+
+/**
+ * Migrate V5 → V6: the platform fee's 25% share stopped going to a partner
+ * treasury and started funding RF buybacks.
+ *
+ * What this changes for a returning user:
+ *   - Nothing is lost. Machines, balances, ledger, and settings all survive
+ *     exactly, because the fee is STILL 5% of USDG spent — only the
+ *     destination of the 25% share changed, and it is spent in future batches.
+ *   - The buyback ledger starts empty. The 25% those machines already accrued
+ *     under v5 went to the retired partner wallet and was not ours to reclaim,
+ *     so it is deliberately NOT retroactively booked as burnable.
+ *
+ * Machine totals are remapped: the stored partner share is dropped rather than
+ * re-labelled as buyback funding, because that USDG was never available to buy
+ * RF. Re-labelling it would invent platform funds.
+ */
+export function migrateV5ToV6(old: Record<string, unknown>): AppState {
+  const fresh = createInitialState();
+  const prev = old as unknown as {
+    machines?: Machine[];
+    playerInventory?: PlayerInventory;
+    creatorAccount?: CreatorAccount;
+    ledgerEvents?: LedgerEvent[];
+    settings?: Partial<AppSettings> & { reducedMotion?: boolean; motionEnabled?: boolean };
+  };
+
+  // Drop the retired partner share; do not carry it into the buyback pot.
+  const machines = (Array.isArray(prev.machines) ? prev.machines : [...fresh.machines]).map(
+    (m) => {
+      const legacy = m as Machine & { partnerFeeUnits?: bigint };
+      const { partnerFeeUnits: _retired, ...rest } = legacy;
+      void _retired;
+      return { ...rest, buybackFeeUnits: 0n } as Machine;
+    }
+  );
+
+  return {
+    version: 7,
+    fixtureVersion: 7,
+    machines,
+    buyback: emptyBuybackLedger(),
+    playerInventory: prev.playerInventory ?? fresh.playerInventory,
+    creatorAccount: prev.creatorAccount ?? fresh.creatorAccount,
+    ledgerEvents: (Array.isArray(prev.ledgerEvents) ? prev.ledgerEvents : []).filter(
+      // The retired partner wallet no longer receives anything; drop its split
+      // events rather than showing a routing that can never happen again.
+      (e) => e.feeRecipient?.address !== '0x16B4297E0D804E711072Be361617D4E23C03c533'
+    ),
+    settings: {
+      ...fresh.settings,
+      ...stripLegacyMotionSetting((prev.settings ?? {}) as Record<string, unknown>),
+      activeRole: prev.settings?.activeRole === 'CREATOR' ? 'CREATOR' : 'PLAYER',
+    },
+  };
+}
+
+/**
+ * Migrate V6 → V7: the machine vault.
+ *
+ * What changes for a returning user:
+ *   - Nothing is lost and no balance moves. Every machine keeps its prizes,
+ *     its published odds, its RTP and its pull history exactly as they were.
+ *   - Machines gain bookkeeping counters for escrow withdrawals, which start
+ *     at zero because no escrow has ever been withdrawn before v7.
+ *   - Creators gain the ability to pause a live machine and withdraw whatever
+ *     escrow is still sitting in it.
+ *
+ * The migration is deliberately a normaliser rather than a rewriter: it only
+ * fills in absent counters. It is also idempotent, so it is safe to run over
+ * state that is already at v7 (which is what the dispatch below relies on
+ * when an older version's ladder returns a current-shaped state).
+ */
+export function migrateV6ToV7(old: Record<string, unknown>): AppState {
+  const prev = old as unknown as {
+    machines?: Machine[];
+    playerInventory?: PlayerInventory;
+    creatorAccount?: CreatorAccount;
+    ledgerEvents?: LedgerEvent[];
+    buyback?: BuybackLedger;
+    settings?: Partial<AppSettings> & { reducedMotion?: boolean; motionEnabled?: boolean };
+  };
+
+  return {
+    version: 7,
+    fixtureVersion: 7,
+    machines: Array.isArray(prev.machines) ? prev.machines.map(withEscrowTotals) : [],
+    buyback: prev.buyback ?? emptyBuybackLedger(),
+    playerInventory: prev.playerInventory ?? {
+      usdgBalanceUnits: 0n,
+      rfBalanceUnits: 0n,
+      wonFriends: [],
+      pullHistory: [],
+    },
+    creatorAccount: prev.creatorAccount ?? {
+      address: '',
+      usdgBalanceUnits: 0n,
+      rfBalanceUnits: 0n,
+      ownedFriends: [],
+      totalProceedsUnits: 0n,
+      totalPlatformFeesGeneratedUnits: 0n,
+      machinesCreatedCount: 0,
+    },
+    ledgerEvents: Array.isArray(prev.ledgerEvents) ? prev.ledgerEvents : [],
+    // Spread first so nothing already stored is dropped — notably the
+    // connected wallet, which decides whose machines the dashboard can
+    // operate on — then strip legacy motion preferences that no longer exist.
+    settings: stripLegacyMotionSetting({
+      ...(prev.settings ?? {}),
+      soundEnabled: prev.settings?.soundEnabled ?? true,
+      activeRole: prev.settings?.activeRole === 'CREATOR' ? 'CREATOR' : 'PLAYER',
+      hasSeenOnboarding: prev.settings?.hasSeenOnboarding ?? false,
+    }) as AppSettings,
+  };
+}
+
+/**
+ * Walk a stored state up to the v6 shape. Each rung is the historical
+ * migration, applied in order from wherever the state was found. Anything
+ * older than v2 falls through to the fixture reseed, because those versions
+ * stored data (fake sprite inventories, RF-denominated balances) that has no
+ * honest conversion.
+ */
+function runV6Ladder(old: Record<string, unknown>, storedVersion: number): AppState {
+  // Already at the v6 shape — nothing to walk. Without this the state would
+  // fall through to the fixture reseed below and a returning user's machines
+  // would be silently replaced.
+  if (storedVersion >= 6) return old as unknown as AppState;
+  if (storedVersion === 5) return migrateV5ToV6(old);
+  if (storedVersion === 4) {
+    const v5 = migrateV4ToV5(old);
+    return migrateV5ToV6(v5 as unknown as Record<string, unknown>);
+  }
+  if (storedVersion === 3) {
+    const v4 = migrateV3ToV4(old);
+    return migrateV4ToV5(v4 as unknown as Record<string, unknown>);
+  }
+  if (storedVersion === 2) {
+    const v3 = migrateV2ToV3(old);
+    const v4 = migrateV3ToV4(v3 as unknown as Record<string, unknown>);
+    return migrateV4ToV5(v4 as unknown as Record<string, unknown>);
+  }
+  return migrateV1ToV2(old);
 }
 
 export function loadAppState(): AppState {
@@ -285,28 +491,23 @@ export function loadAppState(): AppState {
       saveAppState(fallback);
       return fallback;
     }
-    // V1 and older: reseed fixtures at the current RF scale, drop the fake
+    // V1 and older: reseed fixtures at the current scale, drop the fake
     // sprite inventory (never real), preserve user display settings.
     // V2: preserve everything, stamp finite_deck, append new fixtures.
     // V3: preserve everything, stamp legacy_manual valuation snapshots.
+    // V4: RF economy -> USDG economy (preserve settings + owned NFTs only).
+    // V5: 25% of the platform fee funds RF buybacks instead of a partner.
+    // V6: machine vault — pause a machine, withdraw its unused escrow.
     const storedVersion =
       typeof parsed.version === 'number' ? parsed.version : 0;
     if (storedVersion !== STORAGE_VERSION || parsed.fixtureVersion !== FIXTURE_VERSION) {
-      if (storedVersion === 3) {
-        console.info('Migrating Rare Arcade state v3 to v4 (valuation snapshots).');
-        const migrated = migrateV3ToV4(parsed as unknown as Record<string, unknown>);
-        saveAppState(migrated);
-        return migrated;
-      }
-      if (storedVersion === 2) {
-        console.info('Migrating Rare Arcade state v2 to v4 (preserving user data).');
-        const v3 = migrateV2ToV3(parsed as unknown as Record<string, unknown>);
-        const migrated = migrateV3ToV4(v3 as unknown as Record<string, unknown>);
-        saveAppState(migrated);
-        return migrated;
-      }
-      console.info('Migrating Rare Arcade state to current fixtures.');
-      const migrated = migrateV1ToV2(parsed as unknown as Record<string, unknown>);
+      console.info(
+        `Migrating Rare Arcade state v${storedVersion} to v${STORAGE_VERSION} (machine vault: pause + creator escrow withdrawal).`
+      );
+      const v6 = runV6Ladder(parsed as unknown as Record<string, unknown>, storedVersion);
+      // The vault normaliser is idempotent and runs on every path, including
+      // ones whose ladder already produced a current-shaped state.
+      const migrated = migrateV6ToV7(v6 as unknown as Record<string, unknown>);
       saveAppState(migrated);
       return migrated;
     }

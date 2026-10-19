@@ -1,8 +1,23 @@
 import React from 'react';
-import type { Machine, CreatorAccount, LedgerEvent } from '../domain/types.ts';
+import type {
+  Machine,
+  CreatorAccount,
+  LedgerEvent,
+  RareFriendMetadata,
+} from '../domain/types.ts';
 import { isFixedOddsMachine } from '../domain/types.ts';
-import { formatRFGrouped, formatBps } from '../domain/rf.ts';
+import { formatBps } from '../domain/rf.ts';
+import { formatUsdgGrouped } from '../domain/usdg.ts';
 import { cancelMachine } from '../domain/machine.ts';
+import {
+  canPauseMachine,
+  canResumeMachine,
+  canWithdrawEscrow,
+  computeEscrowSnapshot,
+  pauseMachine,
+  resumeMachine,
+  withdrawEscrow,
+} from '../domain/vault.ts';
 import { selectOperatorMachines } from '../nfts/ownership.ts';
 import { PixelIcon } from '../components/ui/PixelIcon.tsx';
 import { RfTokenIcon } from '../components/ui/RfTokenIcon.tsx';
@@ -18,7 +33,21 @@ interface CreatorDashboardProps {
   operatorAddresses: string[];
   onSelectMachine: (machineId: string) => void;
   onNavigateCreate: () => void;
-  onMachineCancelled: (cancelled: Machine, refundRf: bigint, events: LedgerEvent[]) => void;
+  onMachineCancelled: (
+    cancelled: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    events: LedgerEvent[]
+  ) => void;
+  onMachinePaused: (paused: Machine, events: LedgerEvent[]) => void;
+  onMachineResumed: (resumed: Machine, events: LedgerEvent[]) => void;
+  onEscrowWithdrawn: (
+    withdrawn: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    refundFriends: RareFriendMetadata[],
+    events: LedgerEvent[]
+  ) => void;
 }
 
 export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
@@ -28,6 +57,9 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
   onSelectMachine,
   onNavigateCreate,
   onMachineCancelled,
+  onMachinePaused,
+  onMachineResumed,
+  onEscrowWithdrawn,
 }) => {
   // Aggregate stats across all machines created by this operator. A machine
   // counts as yours when its creator address matches any of your operator
@@ -35,7 +67,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
   const myMachines = selectOperatorMachines(machines, operatorAddresses);
   const totalPulls = myMachines.reduce((acc, m) => acc + m.pullCount, 0);
   const totalVolume = myMachines.reduce((acc, m) => acc + m.totalSpentUnits, 0n);
-  const totalBurn = myMachines.reduce((acc, m) => acc + m.totalBurnedUnits, 0n);
+  const totalBurn = myMachines.reduce((acc, m) => acc + m.totalPlatformFeeUnits, 0n);
   const totalReceipts = myMachines.reduce((acc, m) => acc + m.creatorReceiptsUnits, 0n);
 
   const soldOutMachines = myMachines.filter((m) => m.status === 'SOLD_OUT');
@@ -62,7 +94,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             CREATOR DASHBOARD & OPERATOR WORKSHOP
           </h1>
           <p style={{ fontSize: '11px', fontFamily: 'var(--font-lcd)', color: '#444', marginTop: '4px' }}>
-            Manage your Friend Machines • Monitor pull volume, 95% proceeds, and platform burns
+            Manage your Friend Machines • Monitor USDG pull volume, 95% proceeds, and platform fees
           </p>
           <p style={{ fontSize: '9px', fontFamily: 'var(--font-lcd)', color: '#666', marginTop: '4px' }}>
             TRACKING {myMachines.length} MACHINE{myMachines.length === 1 ? '' : 'S'} AS {creator.address.slice(0, 12)}…
@@ -109,7 +141,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             </div>
           </div>
           <div style={{ fontFamily: 'var(--font-lcd)', fontSize: '11px' }}>
-            Total RF Burned by this machine: {formatRFGrouped(soldOutMachines[0]!.totalBurnedUnits, { showSymbol: true })}
+            Total USDG platform fee from this machine: {formatUsdgGrouped(soldOutMachines[0]!.totalPlatformFeeUnits, { showSymbol: true })}
           </div>
         </div>
       )}
@@ -129,7 +161,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             CREATOR RF BALANCE
           </div>
           <div style={{ fontSize: '15px', fontWeight: 'bold', marginTop: '4px' }}>
-            {formatRFGrouped(creator.rfBalanceUnits, { showSymbol: true })}
+            {formatUsdgGrouped(creator.usdgBalanceUnits, { showSymbol: true })}
           </div>
           <div style={{ fontSize: '9px', color: '#777', marginTop: '2px' }}>Available for seeding</div>
         </div>
@@ -139,7 +171,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             TOTAL GROSS VOLUME
           </div>
           <div style={{ fontSize: '15px', fontWeight: 'bold', marginTop: '4px' }}>
-            {formatRFGrouped(totalVolume, { showSymbol: true })}
+            {formatUsdgGrouped(totalVolume, { showSymbol: true })}
           </div>
           <div style={{ fontSize: '9px', color: '#777', marginTop: '2px' }}>Total player turnover</div>
         </div>
@@ -149,17 +181,17 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             TOTAL GROSS PROCEEDS (95%)
           </div>
           <div style={{ fontSize: '15px', fontWeight: 'bold', marginTop: '4px' }}>
-            {formatRFGrouped(totalReceipts, { showSymbol: true })}
+            {formatUsdgGrouped(totalReceipts, { showSymbol: true })}
           </div>
           <div style={{ fontSize: '9px', color: '#777', marginTop: '2px' }}>Earned from pulls</div>
         </div>
 
         <div className="pixel-panel-sunken" style={{ padding: '12px 14px' }}>
           <div style={{ fontSize: '10px', fontFamily: 'var(--font-lcd)', color: '#666' }}>
-            TOTAL RF BURN GENERATED (5%)
+            TOTAL USDG PLATFORM FEES GENERATED (5%)
           </div>
           <div style={{ fontSize: '15px', fontWeight: 'bold', marginTop: '4px' }}>
-            {formatRFGrouped(totalBurn, { showSymbol: true })}
+            {formatUsdgGrouped(totalBurn, { showSymbol: true })}
           </div>
           <div style={{ fontSize: '9px', color: '#777', marginTop: '2px' }}>Permanently destroyed</div>
         </div>
@@ -188,7 +220,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
             <PixelIcon name="machine" size={32} />
             <div style={{ marginTop: '8px', fontSize: '12px' }}>NO MACHINES CREATED YET</div>
             <p style={{ fontSize: '11px', marginTop: '4px' }}>
-              Launch your first Friend Machine to start earning proceeds and burning RF.
+              Launch your first Friend Machine to start earning USDG proceeds.
             </p>
             <button
               type="button"
@@ -209,7 +241,7 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
                 <th>PRICE</th>
                 <th>PULLS</th>
                 <th>RF VOLUME</th>
-                <th>BURN (5%)</th>
+                <th>FEE (5%)</th>
                 <th>RECEIPTS (95%)</th>
                 <th>LIVE RTP</th>
                 <th>EST SELLOUT</th>
@@ -221,8 +253,12 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
                 <DashboardRow
                   key={m.id}
                   machine={m}
+                  operatorAddresses={operatorAddresses}
                   onSelectMachine={onSelectMachine}
                   onMachineCancelled={onMachineCancelled}
+                  onMachinePaused={onMachinePaused}
+                  onMachineResumed={onMachineResumed}
+                  onEscrowWithdrawn={onEscrowWithdrawn}
                 />
               ))}
             </tbody>
@@ -237,9 +273,32 @@ export const CreatorDashboard: React.FC<CreatorDashboardProps> = ({
 /** One dashboard row: branched pulls/RTP cells, low-stock + sellout estimate for Fixed Odds. */
 const DashboardRow: React.FC<{
   machine: Machine;
+  operatorAddresses: string[];
   onSelectMachine: (machineId: string) => void;
-  onMachineCancelled: (cancelled: Machine, refundRf: bigint, events: LedgerEvent[]) => void;
-}> = ({ machine: m, onSelectMachine, onMachineCancelled }) => {
+  onMachineCancelled: (
+    cancelled: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    events: LedgerEvent[]
+  ) => void;
+  onMachinePaused: (paused: Machine, events: LedgerEvent[]) => void;
+  onMachineResumed: (resumed: Machine, events: LedgerEvent[]) => void;
+  onEscrowWithdrawn: (
+    withdrawn: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    refundFriends: RareFriendMetadata[],
+    events: LedgerEvent[]
+  ) => void;
+}> = ({
+  machine: m,
+  operatorAddresses,
+  onSelectMachine,
+  onMachineCancelled,
+  onMachinePaused,
+  onMachineResumed,
+  onEscrowWithdrawn,
+}) => {
   const isFixed = isFixedOddsMachine(m);
   const estimate = useSelloutEstimate(isFixed ? m : null, 150);
   const prizes = prizesRemaining(m);
@@ -258,11 +317,64 @@ const DashboardRow: React.FC<{
     e.stopPropagation();
     if (m.pullCount > 0 || m.isRulesLocked) return;
     try {
-      const { cancelledMachine, refundRfUnits, events } = cancelMachine(m);
+      const { cancelledMachine, refundUsdgUnits, refundRfUnits, events } = cancelMachine(m);
       soundFx.playClick();
-      onMachineCancelled(cancelledMachine, refundRfUnits, events);
+      onMachineCancelled(cancelledMachine, refundUsdgUnits, refundRfUnits, events);
     } catch (err) {
       console.error('Failed to cancel machine:', err);
+    }
+  };
+
+  // --- Vault: pause, resume, withdraw. Every one of these is re-checked in
+  // the domain layer, so a stale button here can never move money.
+  const escrow = computeEscrowSnapshot(m);
+  const pauseOk = canPauseMachine(m, operatorAddresses).ok;
+  const resumeOk = canResumeMachine(m, operatorAddresses).ok;
+  const withdrawCheck = canWithdrawEscrow(m, operatorAddresses);
+  const isClosed = m.status === 'CANCELLED' || m.status === 'SOLD_OUT';
+
+  const handlePause = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { pausedMachine, events } = pauseMachine(m, operatorAddresses);
+      soundFx.playClick();
+      onMachinePaused(pausedMachine, events);
+    } catch (err) {
+      console.error('Failed to pause machine:', err);
+    }
+  };
+
+  const handleResume = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { resumedMachine, events } = resumeMachine(m, operatorAddresses);
+      soundFx.playClick();
+      onMachineResumed(resumedMachine, events);
+    } catch (err) {
+      console.error('Failed to resume machine:', err);
+    }
+  };
+
+  const handleWithdraw = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const {
+        withdrawnMachine,
+        refundUsdgUnits,
+        refundRfUnits,
+        refundFriends,
+        events,
+      } = withdrawEscrow(m, operatorAddresses);
+      soundFx.playClick();
+      onEscrowWithdrawn(
+        withdrawnMachine,
+        refundUsdgUnits,
+        refundRfUnits,
+        refundFriends,
+        events
+      );
+    } catch (err) {
+      console.error('Failed to withdraw escrow:', err);
     }
   };
 
@@ -292,18 +404,31 @@ const DashboardRow: React.FC<{
             </span>
           )}
         </div>
+        {escrow.totalUsdgValueUnits > 0n && (
+          <div
+            style={{
+              marginTop: '4px',
+              fontSize: '9px',
+              fontFamily: 'var(--font-lcd)',
+              color: '#555',
+            }}
+            title="Prize escrow still locked in this machine, withdrawable by you"
+          >
+            VAULT {formatUsdgGrouped(escrow.totalUsdgValueUnits)}
+          </div>
+        )}
       </td>
       <td>
         <span
           style={{
             padding: '2px 6px',
             background:
-              m.status === 'SOLD_OUT'
+              m.status === 'SOLD_OUT' || m.status === 'PAUSED'
                 ? '#000'
                 : m.status === 'LIVE'
                 ? '#e0e0d8'
                 : '#ffffff',
-            color: m.status === 'SOLD_OUT' ? '#fff' : '#000',
+            color: m.status === 'SOLD_OUT' || m.status === 'PAUSED' ? '#fff' : '#000',
             border: '1px solid #000',
             fontSize: '9px',
             fontFamily: 'var(--font-lcd)',
@@ -312,7 +437,7 @@ const DashboardRow: React.FC<{
           {m.status}
         </span>
       </td>
-      <td>{formatRFGrouped(m.pullPriceUnits, { showSymbol: true })}</td>
+      <td>{formatUsdgGrouped(m.pullPriceUnits, { showSymbol: true })}</td>
       <td>
         {isFixed ? (
           <>
@@ -327,12 +452,12 @@ const DashboardRow: React.FC<{
           </>
         )}
       </td>
-      <td>{formatRFGrouped(m.totalSpentUnits, { showSymbol: true })}</td>
+      <td>{formatUsdgGrouped(m.totalSpentUnits, { showSymbol: true })}</td>
       <td style={{ fontWeight: 'bold' }}>
-        {formatRFGrouped(m.totalBurnedUnits, { showSymbol: true })}
+        {formatUsdgGrouped(m.totalPlatformFeeUnits, { showSymbol: true })}
       </td>
       <td style={{ fontWeight: 'bold' }}>
-        {formatRFGrouped(m.creatorReceiptsUnits, { showSymbol: true })}
+        {formatUsdgGrouped(m.creatorReceiptsUnits, { showSymbol: true })}
       </td>
       <td>{formatBps(displayRtpBps(m))}</td>
       <td style={{ fontSize: '10px' }}>
@@ -345,17 +470,56 @@ const DashboardRow: React.FC<{
           : `${m.totalPulls} max`}
       </td>
       <td>
-        {m.pullCount === 0 && !m.isRulesLocked && m.status !== 'CANCELLED' ? (
-          <button
-            type="button"
-            className="pixel-btn pixel-btn-sm"
-            style={{ padding: '2px 6px', fontSize: '9px' }}
-            onClick={handleCancel}
-            title="Cancel machine & reclaim escrow"
-          >
-            CANCEL
-          </button>
-        ) : (
+        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+          {m.pullCount === 0 && !m.isRulesLocked && m.status !== 'CANCELLED' && (
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-sm"
+              style={{ padding: '2px 6px', fontSize: '9px' }}
+              onClick={handleCancel}
+              title="Cancel machine & reclaim escrow"
+            >
+              CANCEL
+            </button>
+          )}
+          {pauseOk && (
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-sm"
+              style={{ padding: '2px 6px', fontSize: '9px' }}
+              onClick={handlePause}
+              title="Pause pulls (escrow untouched, fully reversible)"
+            >
+              PAUSE
+            </button>
+          )}
+          {resumeOk && (
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-sm"
+              style={{ padding: '2px 6px', fontSize: '9px' }}
+              onClick={handleResume}
+              title="Resume pulls"
+            >
+              RESUME
+            </button>
+          )}
+          {!isClosed && (
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-sm"
+              style={{ padding: '2px 6px', fontSize: '9px' }}
+              onClick={handleWithdraw}
+              disabled={!withdrawCheck.ok}
+              title={
+                withdrawCheck.ok
+                  ? `Return ${formatUsdgGrouped(escrow.totalUsdgValueUnits)} of unused escrow and close this machine for good`
+                  : withdrawCheck.reason
+              }
+            >
+              WITHDRAW
+            </button>
+          )}
           <button
             type="button"
             className="pixel-btn pixel-btn-sm"
@@ -367,7 +531,7 @@ const DashboardRow: React.FC<{
           >
             VIEW
           </button>
-        )}
+        </div>
       </td>
     </tr>
   );

@@ -26,7 +26,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
     // Verify Arcade Floor shows 3 seeded demo machines
     await expect(page.locator('text=THE ARCADE FLOOR')).toBeVisible();
     await expect(page.locator('text=FRIEND FRENZY')).toBeVisible();
-    await expect(page.locator('text=RF RAIN')).toBeVisible();
+    await expect(page.locator('text=USDG RAIN')).toBeVisible();
     await expect(page.locator('text=HIGH ROLLER')).toBeVisible();
   });
 
@@ -59,7 +59,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
     await page.click('button:has-text("CLOSE")');
 
     // Execute PULL
-    const pullBtn = page.locator('button:has-text("PULL — 5,000.00 RF")');
+    const pullBtn = page.locator('button:has-text("PULL — 5.00 USDG")');
     await expect(pullBtn).toBeEnabled();
     await pullBtn.click();
 
@@ -94,7 +94,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
 
     // Add RF prize: 20000 RF x 2 (coherent with default 2,500 RF pull price)
     await page.locator('input[type="number"]').first().fill('20000');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await expect(page.locator('text=CURRENT PRIZES IN MACHINE (1)')).toBeVisible();
 
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
@@ -120,7 +120,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
 
     // Step up to a machine (scope to floor cards)
     await page.locator('.cabinet-container:has-text("FRIEND FRENZY")').first().click();
-    await expect(page.locator('button:has-text("PULL — 5,000.00 RF")')).toBeVisible();
+    await expect(page.locator('button:has-text("PULL — 5.00 USDG")')).toBeVisible();
 
     // Assert no horizontal scroll overflow
     const hasHorizontalOverflow = await page.evaluate(() => {
@@ -136,7 +136,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
     }
 
     // RF RAIN is token-only: its floor card must render the coin.
-    const rainCard = page.locator('.cabinet-container:has-text("RF RAIN")').first();
+    const rainCard = page.locator('.cabinet-container:has-text("USDG RAIN")').first();
     await expect(rainCard.locator('.rf-token-icon')).toBeVisible();
 
     // Same on the machine detail LCD.
@@ -169,7 +169,7 @@ test.describe('Rare Arcade — Complete E2E Flows', () => {
     await page.click('button:has-text("NEXT: SEED PRIZES")');
 
     await page.locator('input[type="number"]').first().fill('20000');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
     await page.click('button:has-text("PUBLISH FRIEND MACHINE")');
     await expect(page.locator('span:has-text("CLAW ARCADE")')).toBeVisible();

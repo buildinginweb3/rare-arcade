@@ -10,6 +10,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PlayerInventoryPage } from '../PlayerInventoryPage.tsx';
 import { parseRF } from '../../domain/rf.ts';
+import { parseUsdg } from '../../domain/usdg.ts';
 import type { PlayerInventory, PullResult, PrizeType } from '../../domain/types.ts';
 
 const OUT = 'screenshots/wonprizes';
@@ -41,7 +42,7 @@ function res(prizeType: PrizeType, rfWonUnits = 0n, friendWon?: PullResult['frie
     rfWonUnits,
     friendWon,
     spentUnits: parseRF('2500'),
-    burnedUnits: parseRF('125'),
+    platformFeeUnits: parseRF('125'),
   } as unknown as PullResult;
 }
 
@@ -49,6 +50,7 @@ type Row = { machineId: string; machineName: string; timestamp: number; result: 
 
 const inv = (rows: Row[], friends: PlayerInventory['wonFriends'] = []): PlayerInventory =>
   ({
+    usdgBalanceUnits: parseUsdg('750'),
     rfBalanceUnits: parseRF('750000'),
     wonFriends: friends,
     pullHistory: rows as PlayerInventory['pullHistory'],

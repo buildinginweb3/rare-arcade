@@ -13,7 +13,8 @@
  * deterministic fixtures instead of hitting live endpoints.
  */
 
-import { normalizeAddress, matchAllowedCollection } from './collections.ts';
+import { normalizeAddress } from './collections.ts';
+import { isFundableChain } from './chains.ts';
 import { normalizeInventoryPage, normalizeTokenId } from './normalize.ts';
 import { MOCK_ASSETS } from './mockAssets.ts';
 import { BUNDLED_DEMO_KEY } from './apiKey.ts';
@@ -111,11 +112,19 @@ function tokenIdToPaddedHex(tokenId: string): string | null {
   }
 }
 
-/** Fresh on-chain ownerOf read straight from the public Robinhood RPC (or mock echo). */
+/**
+ * Fresh on-chain `ownerOf` read straight from the public Robinhood RPC.
+ *
+ * Applies to EVERY prize NFT on Robinhood Chain, not just Rare Friends — since
+ * the platform is Robinhood-only there is no indexer-trust fallback. If the RPC
+ * cannot answer, funding fails closed rather than degrading to OpenSea's
+ * ownership response.
+ */
 export async function verifyNftOwnerRemote(
   contract: string,
   tokenId: string
-): Promise<VerifyResponse> {  if (mockMode()) {
+): Promise<VerifyResponse> {
+  if (mockMode()) {
     // In mock mode the "chain" echoes the reported owner: tests override via
     // page.route interception for mismatch cases.
     const asset = MOCK_ASSETS.find(
@@ -123,8 +132,8 @@ export async function verifyNftOwnerRemote(
     );
     return { owner: asset?.reportedOwner ?? '', verifiedAt: Date.now() };
   }
-  if (!matchAllowedCollection(contract)) {
-    throw new Error('Contract is not an eligible Rare Friends collection.');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(contract.trim())) {
+    throw new Error('Contract is not a valid Robinhood Chain address.');
   }
   const canonicalId = normalizeTokenId(tokenId);
   const padded = canonicalId ? tokenIdToPaddedHex(canonicalId) : null;
@@ -156,21 +165,22 @@ export async function verifyNftOwnerRemote(
   return { owner, verifiedAt: Date.now() };
 }
 
-export type VerificationSource = 'onchain' | 'opensea' | 'mock';
+export type VerificationSource = 'onchain' | 'mock';
 
 export interface GenericVerifyResult extends VerifyResponse {
   source: VerificationSource;
 }
 
 /**
- * Generic ownership re-verification at publish time.
- * - Rare Friends on Robinhood: fresh on-chain ownerOf (source 'onchain').
- * - All other chains/contracts: fresh OpenSea ownership query via
- *   GET /chain/{chain}/contract/{address}/nfts/{id} owners[] (source 'opensea').
- * Never fakes ONCHAIN VERIFIED when the source was OpenSea.
+ * Ownership re-verification at publish time.
+ *
+ * Rare Arcade is Robinhood-only, so this is always a single fresh on-chain
+ * `ownerOf` read. The former OpenSea `owners[]` fallback has been deleted: with
+ * one settlement chain there is no reason to trust an indexer when the RPC can
+ * answer directly, and failing closed is safer than failing open.
  */
 export async function verifyNftOwnerGeneric(opts: {
-  chain: string;
+  chain?: string;
   contract: string;
   tokenId: string;
   wallet: string;
@@ -178,32 +188,14 @@ export async function verifyNftOwnerGeneric(opts: {
 }): Promise<GenericVerifyResult> {
   const walletNorm = normalizeAddress(opts.wallet);
   if (!walletNorm) throw new Error('Connect a wallet first.');
+  if (opts.chain && !isFundableChain(opts.chain)) {
+    throw new Error(
+      `Rare Arcade funds Robinhood Chain NFTs only — "${opts.chain}" cannot be added to a machine.`
+    );
+  }
   if (mockMode()) {
     return { owner: walletNorm, verifiedAt: Date.now(), source: 'mock' };
   }
-  const isRare = !!matchAllowedCollection(opts.contract);
-  if (isRare && opts.chain.toLowerCase() === 'robinhood') {
-    const { owner, verifiedAt } = await verifyNftOwnerRemote(opts.contract, opts.tokenId);
-    return { owner, verifiedAt, source: 'onchain' };
-  }
-  // OpenSea ownership re-query (read-only, no signatures).
-  const res = await fetch(
-    `${OPENSEA_BASE}/chain/${opts.chain}/contract/${opts.contract}/nfts/${opts.tokenId}`,
-    { headers: { 'X-API-KEY': OPENSEA_API_KEY, Accept: 'application/json' } }
-  );
-  if (!res.ok) throw await parseError(res, 'OWNERSHIP COULD NOT BE VERIFIED');
-  const data = (await res.json()) as {
-    nft?: { owners?: { address?: string; quantity?: number }[]; token_standard?: string };
-  };
-  const owners = Array.isArray(data.nft?.owners) ? data.nft!.owners! : [];
-  const match = owners.find(
-    (o) =>
-      typeof o.address === 'string' &&
-      o.address.toLowerCase() === walletNorm &&
-      (o.quantity ?? 1) > 0
-  );
-  if (!match) {
-    throw new Error('OWNERSHIP CHANGED — you no longer hold this NFT.');
-  }
-  return { owner: walletNorm, verifiedAt: Date.now(), source: 'opensea' };
+  const { owner, verifiedAt } = await verifyNftOwnerRemote(opts.contract, opts.tokenId);
+  return { owner, verifiedAt, source: 'onchain' };
 }

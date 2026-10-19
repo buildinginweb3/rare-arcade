@@ -30,15 +30,16 @@ export function useSelloutEstimate(
     if (totals.remaining <= 0) return null;
     const lines = machine.remainingPrizes
       .filter(
-        (e): e is Extract<typeof e, { type: 'RF_PRIZE' | 'FRIEND_PRIZE' }> =>
-          (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') && e.remainingQuantity > 0
+        (e): e is Extract<typeof e, { type: 'USDG_PRIZE' | 'RF_PRIZE' | 'FRIEND_PRIZE' }> =>
+          (e.type === 'USDG_PRIZE' || e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') &&
+          e.remainingQuantity > 0
       )
       .map((e) => ({
         prizeEntryId: e.id,
         oddsPpm: e.oddsPpm ?? 0,
         quantity: e.remainingQuantity,
-        referenceValueUnits: (
-          e.type === 'RF_PRIZE' ? e.amountUnits : e.referenceValueUnits
+        usdgValueUnits: (
+          e.type === 'USDG_PRIZE' ? e.amountUnits : e.usdgValueUnits
         ).toString(),
       }));
     return JSON.stringify({
@@ -58,7 +59,7 @@ export function useSelloutEstimate(
         prizeEntryId: string;
         oddsPpm: number;
         quantity: number;
-        referenceValueUnits: string;
+        usdgValueUnits: string;
       }[];
       price: string;
       runs: number;
@@ -71,7 +72,7 @@ export function useSelloutEstimate(
     const report = simulateFixedOddsLifetime({
       lines: parsed.lines.map((l) => ({
         ...l,
-        referenceValueUnits: BigInt(l.referenceValueUnits),
+        usdgValueUnits: BigInt(l.usdgValueUnits),
       })),
       pullPriceUnits: BigInt(parsed.price),
       runs: parsed.runs,

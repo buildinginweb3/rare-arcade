@@ -1,14 +1,19 @@
 /**
- * Fixed-point RF accounting utilities.
+ * Fixed-point RF ($RAREFRIENDS) utilities.
+ *
+ * RF is no longer the play currency — USDG is (see './usdg.ts'). RF survives
+ * as an optional cashback PRIZE currency that creators can seed alongside
+ * USDG cashback. So these helpers exist to parse/format RF prize amounts and
+ * to move RF escrow, not to price pulls.
+ *
  * 1 RF = 1000 internal units (0.001 RF precision).
- * Standard basis points: 10000 bps = 100.00%.
- * Platform burn: 500 bps = 5.00%.
+ *
+ * This module also owns the currency-agnostic fixed-point primitives
+ * (BPS_DIVISOR / mulBps / formatBps) that both RF and USDG math build on.
  */
 
 export const RF_SCALE = 1000n;
 export const BPS_DIVISOR = 10000n;
-export const BURN_BPS = 500n; // 5% fixed platform burn
-export const CREATOR_BPS = 9500n; // 95% to creator receipts
 
 /**
  * Converts human RF string or number into internal integer units.
@@ -111,29 +116,6 @@ export function subRF(a: bigint, b: bigint): bigint {
  */
 export function mulBps(units: bigint, bps: bigint): bigint {
   return (units * bps) / BPS_DIVISOR;
-}
-
-/**
- * Splits pull payment strictly into 5% burn and 95% creator proceeds.
- * Guaranteed invariant: burnUnits + creatorUnits === pullPriceUnits.
- */
-export function calculatePullSplit(pullPriceUnits: bigint): {
-  burnUnits: bigint;
-  creatorUnits: bigint;
-} {
-  if (pullPriceUnits <= 0n) {
-    throw new RangeError('Pull price must be greater than zero');
-  }
-
-  const burnUnits = mulBps(pullPriceUnits, BURN_BPS);
-  const creatorUnits = pullPriceUnits - burnUnits;
-
-  // Invariant assertion
-  if (burnUnits + creatorUnits !== pullPriceUnits) {
-    throw new Error('Pull split conservation invariant violated');
-  }
-
-  return { burnUnits, creatorUnits };
 }
 
 /**

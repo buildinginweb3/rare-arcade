@@ -131,7 +131,7 @@ export const PrizePoolModal: React.FC<PrizePoolModalProps> = ({ machine, onClose
                         }) ?? `#${entry.tokenId.toString()} • ${entry.familyName} (GEN ${entry.generation})`}
                       </div>
                       <div style={{ fontSize: '11px', marginTop: '2px' }}>
-                        Reference Value: {formatRFGrouped(entry.referenceValueUnits)}
+                        Reference Value: {formatRFGrouped(entry.usdgValueUnits)}
                       </div>
                       {entry.valuationSnapshot ? (
                         <div style={{ fontSize: '9px', fontFamily: 'var(--font-lcd)', color: '#444', marginTop: '4px' }}>
@@ -145,9 +145,6 @@ export const PrizePoolModal: React.FC<PrizePoolModalProps> = ({ machine, onClose
                                 : entry.valuationSnapshot.method === 'demo_snapshot'
                                   ? 'Demo snapshot (fixed reproducible economics)'
                                   : `Top bid${entry.valuationSnapshot.topBidUsd ? ` $${entry.valuationSnapshot.topBidUsd}` : ''}`}
-                          {entry.valuationSnapshot.source === 'opensea' && entry.valuationSnapshot.rfUsd
-                            ? ` • $RF $${entry.valuationSnapshot.rfUsd}`
-                            : ''}
                           {entry.valuationSnapshot.source === 'opensea'
                             ? ' • Source: OpenSea'
                             : ''}

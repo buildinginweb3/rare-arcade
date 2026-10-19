@@ -71,7 +71,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.click('button:has-text("CLOSE")');
 
     // 05-pull-start & 06-burn-animation (5,000 RF pull)
-    await page.click('button:has-text("PULL — 5,000.00 RF")');
+    await page.click('button:has-text("PULL — 5.00 USDG")');
     await page.waitForTimeout(100);
     await page.screenshot({ path: path.join(screenshotsDir, '05-pull-start.png') });
     await page.waitForTimeout(250);
@@ -101,7 +101,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.screenshot({ path: path.join(screenshotsDir, '10-create-prizes.png') });
 
     // 11-create-economics (presets + CUSTOM) & 12-create-preview
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(screenshotsDir, '11-create-economics.png') });
@@ -117,7 +117,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.screenshot({ path: path.join(screenshotsDir, '13-creator-dashboard.png') });
 
     // 14-activity
-    await page.locator('nav button:has-text("RF ACTIVITY")').click();
+    await page.locator('nav button:has-text("USDG ACTIVITY")').click();
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(screenshotsDir, '14-activity.png') });
 
@@ -133,7 +133,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.screenshot({ path: path.join(screenshotsDir, '16-mobile-arcade.png') });
 
     // 17-mobile-machine
-    await page.locator('.cabinet-container:has-text("RF RAIN")').first().click();
+    await page.locator('.cabinet-container:has-text("USDG RAIN")').first().click();
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(screenshotsDir, '17-mobile-machine.png') });
 
@@ -217,7 +217,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
 
     // Fund (automatic top-bid valuation) + add RF, go to economics
     await page.click('button:has-text("CONFIRM & SIMULATE FUNDING")');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
 
     // 22: custom 72.5% RTP state
@@ -242,7 +242,7 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('nav button:has-text("BUILD MACHINE")').click();
     await page.click('button:has-text("NEXT: SEED PRIZES")');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
     await page.click('button:has-text("CUSTOM")');
     await page.waitForTimeout(300);
@@ -316,11 +316,11 @@ test.describe('Rare Arcade — Visual QA Screenshot Capture', () => {
     await page.screenshot({ path: path.join(screenshotsDir, '28-fixed-builder.png') });
 
     // 29: prize table with configured odds
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.locator('input[type="number"]').first().fill('25000');
     await page.locator('input[type="number"]').nth(1).fill('10');
     await page.locator('input[type="number"]').nth(2).fill('2');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(screenshotsDir, '29-fixed-prize-table.png') });
 

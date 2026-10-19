@@ -39,8 +39,7 @@ function pricedRef() {
     topBidUsd: '100',
     bidNative: '100',
     bidCurrency: 'USDC',
-    rfUsd: '0.002',
-    referenceRfUnits: 50_000_000n,
+    usdgValueUnits: 100_000_000n,
     fallbackUsed: false,
     valuedAt: Date.now(),
   };
@@ -49,15 +48,16 @@ function pricedRef() {
 describe('buildNftPrizeEntry', () => {
   it('builds one immutable entry with snapshot per NFT', () => {
     const a = nft({ tokenId: '1', contract: '0x0000000000000000000000000000000000000001' });
-    const entry = buildNftPrizeEntry({ asset: a, pricing: pricedRef(), refValUnits: 50_000_000n });
+    const entry = buildNftPrizeEntry({ asset: a, pricing: pricedRef(), usdgValueUnits: 100_000_000n });
     expect(entry.type).toBe('FRIEND_PRIZE');
     if (entry.type !== 'FRIEND_PRIZE') throw new Error('unreachable');
     expect(entry.tokenId).toBe(1n);
-    expect(entry.referenceValueUnits).toBe(50_000_000n);
+    expect(entry.usdgValueUnits).toBe(100_000_000n);
     expect(entry.initialQuantity).toBe(1);
     expect(entry.origin).toBe('real-nft');
     expect(entry.valuationSnapshot?.topBidUsd).toBe('100');
-    expect(entry.valuationSnapshot?.referenceRf).toBe('50000000');
+    // USDG is pegged 1:1 to USD, so a $100 top bid is exactly 100 USDG.
+    expect(entry.valuationSnapshot?.referenceUsdg).toBe('100');
     expect(entry.valuationSnapshot?.source).toBe('opensea');
     expect(entry.oddsPpm).toBeUndefined();
   });
@@ -67,7 +67,7 @@ describe('buildNftPrizeEntry', () => {
       nft({ tokenId: t, contract: '0x0000000000000000000000000000000000000001' })
     );
     const entries = assets.map((a) =>
-      buildNftPrizeEntry({ asset: a, pricing: pricedRef(), refValUnits: 50_000_000n, oddsPpm: 10000 })
+      buildNftPrizeEntry({ asset: a, pricing: pricedRef(), usdgValueUnits: 100_000_000n, oddsPpm: 10000 })
     );
     expect(entries).toHaveLength(3);
     const ids = new Set(entries.map((e) => e.id));
@@ -76,7 +76,7 @@ describe('buildNftPrizeEntry', () => {
       expect(e.type).toBe('FRIEND_PRIZE');
       if (e.type !== 'FRIEND_PRIZE') throw new Error('unreachable');
       expect(e.oddsPpm).toBe(10000);
-      expect(e.referenceValueUnits).toBe(50_000_000n);
+      expect(e.usdgValueUnits).toBe(100_000_000n);
     }
     // Total configured chance is the SUM (3%), never an even split.
     const totalPpm = entries.reduce(
@@ -96,7 +96,7 @@ describe('buildNftPrizeEntry', () => {
         traitType: 'Generation',
         traitValue: '3',
       },
-      refValUnits: 20_000_000n,
+      usdgValueUnits: 20_000_000n,
     });
     if (entry.type !== 'FRIEND_PRIZE') throw new Error('unreachable');
     expect(entry.generation).toBe(0);

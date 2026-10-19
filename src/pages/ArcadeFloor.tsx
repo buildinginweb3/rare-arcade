@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import type { Machine } from '../domain/types.ts';
 import { isFixedOddsMachine } from '../domain/types.ts';
 import { isMachineSoldOut } from '../domain/machine.ts';
-import { formatRFGrouped, formatRFCompact, formatBps } from '../domain/rf.ts';
+import { formatRFGrouped, formatBps } from '../domain/rf.ts';
+import { formatUsdgGrouped, formatUsdgCompact } from '../domain/usdg.ts';
 import { PixelIcon } from '../components/ui/PixelIcon.tsx';
 import { RareFriendSprite } from '../components/ui/RareFriendSprite.tsx';
 import { FriendPrizeVisual } from '../nfts/FriendPrizeVisual.tsx';
@@ -75,7 +76,7 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
             THE ARCADE FLOOR
           </h1>
           <p style={{ fontSize: '11px', fontFamily: 'var(--font-lcd)', color: '#444', marginTop: '4px' }}>
-            Browse community Friend Machines • Every pull burns 5% RF • Transparent finite odds
+            Browse community Friend Machines • Every pull pays a 5% platform fee in USDG • Transparent finite odds
           </p>
         </div>
 
@@ -180,12 +181,17 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
         >
           {filteredMachines.map((m) => {
             const isSoldOut = isMachineSoldOut(m);
+            // A paused machine is still fully stocked and still viewable, but
+            // it cannot be played — the card must not advertise a pull.
+            const isPaused = m.status === 'PAUSED';
             const topVisual = selectTopPrizeVisual(m);
             const topFriend = topVisual.kind === 'nft' ? topVisual.entry : undefined;
-            const topRf = topVisual.kind === 'rf' ? topVisual.entry : undefined;
+            // Top reward prize, in whichever currency it is paid out.
+            const topCashback =
+              topVisual.kind === 'usdg' || topVisual.kind === 'rf' ? topVisual.entry : undefined;
             const prizes = prizesRemaining(m);
             // Live RTP of 0 means there is no prize value left to win, so
-            // the "Tokens" fallback would be misleading.
+            // the "Rewards" fallback would be misleading.
             const liveRtpBps = displayRtpBps(m);
             const hasNoPrizeValue = liveRtpBps === 0;
 
@@ -196,7 +202,7 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
                 style={{
                   cursor: 'pointer',
                   maxWidth: '100%',
-                  opacity: isSoldOut ? 0.75 : 1,
+                  opacity: isSoldOut || isPaused ? 0.75 : 1,
                 }}
                 onClick={() => onSelectMachine(m.id)}
                 role="button"
@@ -269,6 +275,28 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
                             : `${m.totalPulls} pulls consumed`}
                         </div>
                       </div>
+                    ) : isPaused ? (
+                      <div style={{ textAlign: 'center' }}>
+                        <PixelIcon name="lock" size={32} />
+                        <div style={{ fontFamily: 'var(--font-display)', fontSize: '11px', marginTop: '6px' }}>
+                          PAUSED
+                        </div>
+                        <div style={{ fontFamily: 'var(--font-lcd)', fontSize: '9px', color: '#666', marginTop: '2px' }}>
+                          creator suspended pulls
+                        </div>
+                        {m.pausedAt !== undefined && (
+                          <div
+                            style={{
+                              fontFamily: 'var(--font-lcd)',
+                              fontSize: '8px',
+                              color: '#888',
+                              marginTop: '2px',
+                            }}
+                          >
+                            since {new Date(m.pausedAt).toLocaleDateString()}
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div style={{ textAlign: 'center' }}>
                         {topVisual.kind === 'nft' && topFriend ? (
@@ -314,11 +342,13 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
                         >
                           {topFriend
                             ? topFriend.name
-                            : topRf
-                            ? `${formatRFGrouped(topRf.amountUnits)}`
+                            : topCashback
+                            ? topCashback.type === 'USDG_PRIZE'
+                              ? formatUsdgGrouped(topCashback.amountUnits)
+                              : formatRFGrouped(topCashback.amountUnits)
                             : hasNoPrizeValue
-                            ? 'None Left'
-                            : 'Tokens'}
+                              ? 'None Left'
+                              : 'Rewards'}
                         </div>
                       </div>
                     )}
@@ -340,8 +370,8 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
                   >
                     <div>
                       <div style={{ color: '#666' }}>COST</div>
-                      <div style={{ fontWeight: 'bold', fontSize: '10px' }} title={formatRFGrouped(m.pullPriceUnits)}>
-                        {formatRFCompact(m.pullPriceUnits)}
+                      <div style={{ fontWeight: 'bold', fontSize: '10px' }} title={formatUsdgGrouped(m.pullPriceUnits)}>
+                        {formatUsdgCompact(m.pullPriceUnits)}
                       </div>
                     </div>
                     <div>
@@ -377,9 +407,9 @@ export const ArcadeFloor: React.FC<ArcadeFloorProps> = ({
                       onSelectMachine(m.id);
                     }}
                   >
-                    {isSoldOut
+                    {isSoldOut || isPaused
                       ? 'VIEW STATS'
-                      : `Play — ${formatRFGrouped(m.pullPriceUnits)}`}
+                      : `Play — ${formatUsdgGrouped(m.pullPriceUnits)}`}
                   </button>
                 </div>
               </div>

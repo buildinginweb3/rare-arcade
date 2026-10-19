@@ -1,14 +1,14 @@
 /**
- * Publish snapshot + RF identity + machine-integration tests.
+ * Publish snapshot + NFT identity + machine-integration tests.
  * Deterministic — no network.
  */
 import { describe, it, expect } from 'vitest';
 import { createMachine } from '../../domain/machine.ts';
 import { createFixedOddsMachine } from '../../domain/fixedOdds.ts';
 import { calculateTotalPrizeValue } from '../../domain/economics.ts';
-import { parseRF } from '../../domain/rf.ts';
+import { parseUsdg } from '../../domain/usdg.ts';
 import { createSeedableRng } from '../../domain/deck.ts';
-import { convertUsdToRfUnits } from '../valuation.ts';
+import { convertUsdToUsdgUnits } from '../valuation.ts';
 import { stampLegacyValuation } from '../../data/storage.ts';
 import type { PrizeEntry, NftValuationSnapshot } from '../../domain/types.ts';
 
@@ -23,7 +23,7 @@ function nftPrize(refUnits: bigint, snapshot?: NftValuationSnapshot): PrizeEntry
     name: 'Friend #8283',
     familyName: 'Rare Friends Generations',
     generation: 3,
-    referenceValueUnits: refUnits,
+    usdgValueUnits: refUnits,
     initialQuantity: 1,
     remainingQuantity: 1,
     origin: 'real-nft',
@@ -38,9 +38,9 @@ function nftPrize(refUnits: bigint, snapshot?: NftValuationSnapshot): PrizeEntry
 }
 
 describe('publish snapshot locking', () => {
-  it('locks reference at publish: top bid $100 / RF $0.002 = 50,000 RF, immune to later moves', () => {
-    const ref = convertUsdToRfUnits('100', '0.002')!;
-    expect(ref).toBe(50_000_000n);
+  it('locks reference at publish: a $100 top bid is $100 USDG 1:1, immune to later moves', () => {
+    const ref = convertUsdToUsdgUnits('100')!;
+    expect(ref).toBe(100_000_000n);
     const snapshot: NftValuationSnapshot = {
       method: 'rare_friends_generation_bid',
       source: 'opensea',
@@ -48,45 +48,43 @@ describe('publish snapshot locking', () => {
       traitType: 'Generation',
       traitValue: '3',
       topBidUsd: '100',
-      rfUsd: '0.002',
-      referenceRf: ref.toString(),
+      referenceUsdg: '100',
       valuedAt: Date.now(),
       fallbackUsed: false,
     };
     const prizes: PrizeEntry[] = [
       nftPrize(ref, snapshot),
-      { id: 'p-rf', type: 'RF_PRIZE', amountUnits: parseRF('10000'), initialQuantity: 2, remainingQuantity: 2 },
+      { id: 'p-cash', type: 'USDG_PRIZE', amountUnits: parseUsdg('10'), initialQuantity: 2, remainingQuantity: 2 },
     ];
     const { machine } = createMachine({
       id: 'm-snap',
       name: 'SNAP',
       shellId: 'CLASSIC',
       creatorAddress: '0xabc',
-      pullPriceUnits: parseRF('5000'),
+      pullPriceUnits: parseUsdg('5'),
       totalPulls: 20,
       targetRtpBps: 9000,
       prizeEntries: prizes,
       rng: createSeedableRng(1),
     });
     const lockedTotal = calculateTotalPrizeValue(machine.initialPrizes, false);
-    // Market moves: top bid $200, RF $0.001 → would be 200,000 RF if refloated.
-    const movedRef = convertUsdToRfUnits('200', '0.001')!;
+    // Market moves: top bid doubles to $200. The published machine must not.
+    const movedRef = convertUsdToUsdgUnits('200')!;
     expect(movedRef).toBe(200_000_000n);
     // Published machine still uses the locked snapshot.
     const prize = machine.initialPrizes.find((p) => p.type === 'FRIEND_PRIZE')!;
-    expect(prize.type === 'FRIEND_PRIZE' && prize.referenceValueUnits).toBe(ref);
+    expect(prize.type === 'FRIEND_PRIZE' && prize.usdgValueUnits).toBe(ref);
     expect(calculateTotalPrizeValue(machine.initialPrizes, false)).toBe(lockedTotal);
   });
 
   it('uses the same immutable snapshot in Finite Deck and Fixed Odds', () => {
-    const ref = convertUsdToRfUnits('100', '0.002')!;
+    const ref = convertUsdToUsdgUnits('100')!;
     const snap: NftValuationSnapshot = {
       method: 'collection_top_bid',
       source: 'opensea',
       collectionSlug: 'some-collection',
       topBidUsd: '100',
-      rfUsd: '0.002',
-      referenceRf: ref.toString(),
+      referenceUsdg: '100',
       valuedAt: Date.now(),
       fallbackUsed: false,
     };
@@ -95,7 +93,7 @@ describe('publish snapshot locking', () => {
       name: 'D',
       shellId: 'CLASSIC',
       creatorAddress: '0xabc',
-      pullPriceUnits: parseRF('5000'),
+      pullPriceUnits: parseUsdg('5'),
       totalPulls: 20,
       targetRtpBps: 9000,
       prizeEntries: [nftPrize(ref, snap)],
@@ -108,7 +106,7 @@ describe('publish snapshot locking', () => {
       name: 'F',
       shellId: 'CLASSIC',
       creatorAddress: '0xabc',
-      pullPriceUnits: parseRF('5000'),
+      pullPriceUnits: parseUsdg('5'),
       targetRtpBps: 9000,
       prizeEntries: [{ ...base, oddsPpm: 10000 }],
     });
@@ -118,13 +116,13 @@ describe('publish snapshot locking', () => {
   });
 
   it('stamps legacy_manual on pre-existing machines without rewriting economics', () => {
-    const ref = parseRF('250000');
+    const ref = parseUsdg('250');
     const { machine } = createMachine({
       id: 'm-legacy',
       name: 'L',
       shellId: 'CLASSIC',
       creatorAddress: '0xabc',
-      pullPriceUnits: parseRF('5000'),
+      pullPriceUnits: parseUsdg('5'),
       totalPulls: 100,
       targetRtpBps: 9000,
       prizeEntries: [
@@ -135,7 +133,7 @@ describe('publish snapshot locking', () => {
           name: 'Old',
           familyName: 'Genesis',
           generation: 0,
-          referenceValueUnits: ref,
+          usdgValueUnits: ref,
           initialQuantity: 1,
           remainingQuantity: 1,
           origin: 'real-nft',
@@ -165,7 +163,7 @@ describe('publish snapshot locking', () => {
     const [migrated] = stampLegacyValuation([stripped as typeof machine]);
     const p = migrated!.initialPrizes.find((x) => x.type === 'FRIEND_PRIZE')!;
     expect(p.type === 'FRIEND_PRIZE' && p.valuationSnapshot?.method).toBe('legacy_manual');
-    expect(p.type === 'FRIEND_PRIZE' && p.referenceValueUnits).toBe(ref);
+    expect(p.type === 'FRIEND_PRIZE' && p.usdgValueUnits).toBe(ref);
   });
 });
 

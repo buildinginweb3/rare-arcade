@@ -6,14 +6,28 @@
  * (parts-per-million). Sold-out prize slots become empty outcomes — other
  * prize odds never change.
  *
- * Shared accounting (5% burn / 95% receipts, bigint RF math, ledger shape)
- * reuses rf.ts + economics.ts. All probability math is integer ppm.
+ * Shared accounting (5% platform fee / 95% receipts, bigint USDG math, ledger
+ * shape) reuses fees.ts + usdg.ts + economics.ts. All probability math is
+ * integer ppm. Cashback prize lines may be USDG, RF, or NFTs.
  */
 
-import { BPS_DIVISOR, mulBps, calculatePullSplit } from './rf.ts';
+import { BPS_DIVISOR, mulBps, formatRF, formatRFGrouped } from './rf.ts';
+import { formatUsdg, formatUsdgGrouped } from './usdg.ts';
+import {
+  calculatePullSplit,
+  PLATFORM_FEE_BPS,
+  PLATFORM_FEE_RECIPIENTS,
+} from './fees.ts';
 import { calculateRtpBps, calculateTotalPrizeValue } from './economics.ts';
 import { createSeedableRng, type RngFunction, defaultCryptoRng } from './deck.ts';
 import { TECHNICAL_MAX_RTP_BPS } from './rtp.ts';
+import { assertFundablePrizes } from './settlement.ts';
+import {
+  isPrizeLine,
+  type FriendPrizeEntry,
+  type PrizeLineEntry,
+  type Ticket,
+} from './types.ts';
 import type {
   FixedOddsMachine,
   LedgerEvent,
@@ -21,10 +35,12 @@ import type {
   PrizeEntry,
   PullResult,
   RareFriendMetadata,
-  RFPrizeEntry,
-  FriendPrizeEntry,
-  Ticket,
 } from './types.ts';
+
+/** Type-predicate wrapper so `filter` narrows PrizeEntry -> PrizeLineEntry. */
+function isPrizeLinePredicate(entry: PrizeEntry): entry is PrizeLineEntry {
+  return isPrizeLine(entry);
+}
 
 /** 1,000,000 parts-per-million = 100%. Supports 0.0001% granularity. */
 export const PPM_SCALE = 1_000_000;
@@ -68,9 +84,13 @@ export function formatOddsPpm(ppm: number): string {
   return `${whole}.${fracStr}%`;
 }
 
-/** Reference value (per unit) of a prize entry. */
-function unitReferenceValue(entry: RFPrizeEntry | FriendPrizeEntry): bigint {
-  return entry.type === 'RF_PRIZE' ? entry.amountUnits : entry.referenceValueUnits;
+/**
+ * EV reference value (per unit) of a prize line, always in USDG units.
+ * USDG cashback values at face; RF cashback and NFTs use their locked
+ * seed-time USDG snapshots.
+ */
+function unitReferenceValue(entry: PrizeLineEntry): bigint {
+  return entry.type === 'USDG_PRIZE' ? entry.amountUnits : entry.usdgValueUnits;
 }
 
 /** Stable identity key for NFT duplicate detection (mirrors deck.ts). */
@@ -89,12 +109,11 @@ export function validateFixedOddsPrizes(entries: readonly PrizeEntry[]): {
   totalPpm: number;
   noPrizePpm: number;
 } {
-  const lines = entries.filter(
-    (e): e is RFPrizeEntry | FriendPrizeEntry =>
-      e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE'
-  );
+  const lines = entries.filter(isPrizeLinePredicate);
   if (lines.length === 0) {
-    throw new Error('Fixed Odds machine must contain at least one RF or Rare Friend prize.');
+    throw new Error(
+      'Fixed Odds machine must contain at least one USDG cashback, RF cashback, or Rare Friend prize.'
+    );
   }
   if (entries.some((e) => e.type === 'NO_PRIZE')) {
     throw new Error('Fixed Odds machines derive no-prize odds automatically — do not add NO_PRIZE entries.');
@@ -119,11 +138,19 @@ export function validateFixedOddsPrizes(entries: readonly PrizeEntry[]): {
         throw new Error(`Duplicate unique Rare Friend prize detected: ${key}`);
       }
       seenFriends.add(key);
-      if (entry.referenceValueUnits <= 0n) {
+      if (entry.usdgValueUnits <= 0n) {
         throw new Error(`NFT prize "${entry.name}" needs a positive reference value.`);
       }
     } else if (entry.amountUnits <= 0n) {
-      throw new Error('RF prize amount must be > 0.');
+      throw new Error(
+        entry.type === 'USDG_PRIZE'
+          ? 'USDG cashback amount must be > 0.'
+          : 'RF cashback amount must be > 0.'
+      );
+    } else if (unitReferenceValue(entry) <= 0n) {
+      throw new Error(
+        `Prize "${entry.id}" needs a positive USDG reference value for RTP accounting.`
+      );
     }
     totalPpm += ppm;
   }
@@ -149,11 +176,7 @@ export function buildFixedOddsIntervals(
   entries: readonly PrizeEntry[]
 ): FixedOddsInterval[] {
   const lines = entries
-    .filter(
-      (e): e is RFPrizeEntry | FriendPrizeEntry =>
-        (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') &&
-        (e.oddsPpm ?? 0) > 0
-    )
+    .filter((e): e is PrizeLineEntry => isPrizeLine(e) && (e.oddsPpm ?? 0) > 0)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const intervals: FixedOddsInterval[] = [];
   let cursor = 0;
@@ -190,13 +213,13 @@ export function resolveFixedOddsRoll(
  * EV = Σ(ref × ppm) / 1e6, RTP = EV × 10000 / pullPrice.
  */
 export function fixedOddsRtpBps(
-  lines: ReadonlyArray<{ referenceValueUnits: bigint; oddsPpm: number }>,
+  lines: ReadonlyArray<{ usdgValueUnits: bigint; oddsPpm: number }>,
   pullPriceUnits: bigint
 ): number {
   if (pullPriceUnits <= 0n) return 0;
   let numerator = 0n;
   for (const line of lines) {
-    numerator += line.referenceValueUnits * BigInt(line.oddsPpm);
+    numerator += line.usdgValueUnits * BigInt(line.oddsPpm);
   }
   const evUnits = numerator / BigInt(PPM_SCALE);
   return calculateRtpBps(evUnits, pullPriceUnits);
@@ -208,11 +231,8 @@ export function calculateConfiguredRtpBps(
   pullPriceUnits: bigint
 ): number {
   const lines = entries
-    .filter(
-      (e): e is RFPrizeEntry | FriendPrizeEntry =>
-        e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE'
-    )
-    .map((e) => ({ referenceValueUnits: unitReferenceValue(e), oddsPpm: e.oddsPpm ?? 0 }));
+    .filter(isPrizeLinePredicate)
+    .map((e) => ({ usdgValueUnits: unitReferenceValue(e), oddsPpm: e.oddsPpm ?? 0 }));
   return fixedOddsRtpBps(lines, pullPriceUnits);
 }
 
@@ -226,15 +246,12 @@ export function calculateLiveAvailableRtpBps(
   pullPriceUnits: bigint
 ): number {
   const lines = remainingPrizes
-    .filter(
-      (e): e is RFPrizeEntry | FriendPrizeEntry =>
-        (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') && e.remainingQuantity > 0
-    )
-    .map((e) => ({ referenceValueUnits: unitReferenceValue(e), oddsPpm: e.oddsPpm ?? 0 }));
+    .filter((e): e is PrizeLineEntry => isPrizeLine(e) && e.remainingQuantity > 0)
+    .map((e) => ({ usdgValueUnits: unitReferenceValue(e), oddsPpm: e.oddsPpm ?? 0 }));
   return fixedOddsRtpBps(lines, pullPriceUnits);
 }
 
-/** Creator edge in BPS: 9500 (post-burn receipts) minus RTP. May be negative. */
+/** Creator edge in BPS: 9500 (post-fee receipts) minus RTP. May be negative. */
 export function calculateCreatorEdgeBps(rtpBps: number): number {
   return 9500 - rtpBps;
 }
@@ -243,7 +260,7 @@ export function calculateCreatorEdgeBps(rtpBps: number): number {
 export function baseNoPrizePpm(entries: readonly PrizeEntry[]): number {
   let total = 0;
   for (const e of entries) {
-    if (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') total += e.oddsPpm ?? 0;
+    if (isPrizeLine(e)) total += e.oddsPpm ?? 0;
   }
   return Math.max(0, MAX_TOTAL_ODDS_PPM - total);
 }
@@ -252,10 +269,7 @@ export function baseNoPrizePpm(entries: readonly PrizeEntry[]): number {
 export function soldOutSlotPpm(entries: readonly PrizeEntry[]): number {
   let soldOut = 0;
   for (const e of entries) {
-    if (
-      (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') &&
-      e.remainingQuantity <= 0
-    ) {
+    if (isPrizeLine(e) && e.remainingQuantity <= 0) {
       soldOut += e.oddsPpm ?? 0;
     }
   }
@@ -267,7 +281,7 @@ export function effectiveNoPrizePpm(entries: readonly PrizeEntry[]): number {
   return baseNoPrizePpm(entries) + soldOutSlotPpm(entries);
 }
 
-/** Prize inventory totals (RF + Friend items; NO_PRIZE never stored for fixed odds). */
+/** Prize inventory totals (USDG/RF cashback + NFTs; NO_PRIZE is never stored). */
 export function fixedOddsInventoryTotals(
   entries: readonly PrizeEntry[],
   useRemaining: boolean
@@ -275,7 +289,7 @@ export function fixedOddsInventoryTotals(
   let initial = 0;
   let remaining = 0;
   for (const e of entries) {
-    if (e.type !== 'RF_PRIZE' && e.type !== 'FRIEND_PRIZE') continue;
+    if (!isPrizeLine(e)) continue;
     initial += e.initialQuantity;
     remaining += useRemaining ? e.remainingQuantity : e.initialQuantity;
   }
@@ -289,7 +303,7 @@ export function isFixedOddsInventoryEmpty(entries: readonly PrizeEntry[]): boole
 
 export interface FixedOddsRow {
   prizeEntryId: string;
-  type: 'RF_PRIZE' | 'FRIEND_PRIZE';
+  type: PrizeLineEntry['type'];
   label: string;
   detail: string;
   oddsPpm: number;
@@ -297,7 +311,7 @@ export interface FixedOddsRow {
   remainingQuantity: number;
   initialQuantity: number;
   soldOut: boolean;
-  referenceValueUnits: bigint;
+  usdgValueUnits: bigint;
 }
 
 export interface FixedOddsTable {
@@ -318,25 +332,29 @@ export interface FixedOddsTable {
 export function getFixedOddsTable(machine: FixedOddsMachine): FixedOddsTable {
   const rows: FixedOddsRow[] = [];
   for (const entry of machine.remainingPrizes) {
-    if (entry.type !== 'RF_PRIZE' && entry.type !== 'FRIEND_PRIZE') continue;
+    if (!isPrizeLine(entry)) continue;
     const ppm = entry.oddsPpm ?? 0;
     rows.push({
       prizeEntryId: entry.id,
       type: entry.type,
       label:
-        entry.type === 'RF_PRIZE'
-          ? `${entry.amountUnits / 1000n} RF`
-          : entry.name,
+        entry.type === 'USDG_PRIZE'
+          ? `${formatUsdg(entry.amountUnits, { decimals: 2 })} USDG`
+          : entry.type === 'RF_PRIZE'
+            ? `${formatRF(entry.amountUnits, { decimals: 2 })} RF`
+            : entry.name,
       detail:
-        entry.type === 'RF_PRIZE'
-          ? 'Simulated Token Reward'
-          : `${entry.familyName} (Gen ${entry.generation})`,
+        entry.type === 'USDG_PRIZE'
+          ? 'USDG Reward'
+          : entry.type === 'RF_PRIZE'
+            ? '$RAREFRIENDS Reward'
+            : `${entry.familyName} (Gen ${entry.generation})`,
       oddsPpm: ppm,
       oddsPct: formatOddsPpm(ppm),
       remainingQuantity: entry.remainingQuantity,
       initialQuantity: entry.initialQuantity,
       soldOut: entry.remainingQuantity <= 0,
-      referenceValueUnits: unitReferenceValue(entry),
+      usdgValueUnits: unitReferenceValue(entry),
     });
   }
   rows.sort((a, b) => (a.prizeEntryId < b.prizeEntryId ? -1 : 1));
@@ -468,7 +486,7 @@ export function suggestFixedOddsPpm(
     oddsPpm: finalPpms[i]!,
   }));
   const achievedRtpBps = fixedOddsRtpBps(
-    lines.map((l, i) => ({ referenceValueUnits: l.unitRefUnits, oddsPpm: finalPpms[i]! })),
+    lines.map((l, i) => ({ usdgValueUnits: l.unitRefUnits, oddsPpm: finalPpms[i]! })),
     pullPriceUnits
   );
   return { suggestions, achievedRtpBps, capped };
@@ -483,7 +501,7 @@ export interface MonteCarloInput {
     prizeEntryId: string;
     oddsPpm: number;
     quantity: number;
-    referenceValueUnits: bigint;
+    usdgValueUnits: bigint;
   }>;
   pullPriceUnits: bigint;
   runs?: number;
@@ -496,7 +514,8 @@ export interface MonteCarloReport {
   censoredRuns: number;
   pullsToSellout: { p10: number; p25: number; median: number; p75: number; p90: number };
   medianVolumeUnits: bigint;
-  medianBurnUnits: bigint;
+  /** Median 5% platform fee taken across runs. */
+  medianPlatformFeeUnits: bigint;
   medianReceiptsUnits: bigint;
   medianNetUnits: bigint;
   /** p10 net — bad-luck early-sellout scenario. */
@@ -539,18 +558,19 @@ export function simulateFixedOddsLifetime(input: MonteCarloInput): MonteCarloRep
   const intervals = buildFixedOddsIntervals(
     lines.map((l) => ({
       id: l.prizeEntryId,
-      type: 'RF_PRIZE' as const,
-      amountUnits: l.referenceValueUnits,
+      type: 'USDG_PRIZE' as const,
+      amountUnits: l.usdgValueUnits,
+      usdgValueUnits: l.usdgValueUnits,
       initialQuantity: l.quantity,
       remainingQuantity: l.quantity,
       oddsPpm: l.oddsPpm,
     }))
   );
-  const refById = new Map(lines.map((l) => [l.prizeEntryId, l.referenceValueUnits]));
+  const refById = new Map(lines.map((l) => [l.prizeEntryId, l.usdgValueUnits]));
   const pullsList: number[] = [];
   const nets: bigint[] = [];
   const volumes: bigint[] = [];
-  const burns: bigint[] = [];
+  const platformFees: bigint[] = [];
   const receipts: bigint[] = [];
   let censoredRuns = 0;
 
@@ -571,11 +591,11 @@ export function simulateFixedOddsLifetime(input: MonteCarloInput): MonteCarloRep
     }
     if (left > 0) censoredRuns++;
     const volume = pullPriceUnits * BigInt(pulls);
-    const burn = mulBps(volume, 500n);
-    const receiptUnits = volume - burn;
+    const platformFee = mulBps(volume, PLATFORM_FEE_BPS);
+    const receiptUnits = volume - platformFee;
     pullsList.push(pulls);
     volumes.push(volume);
-    burns.push(burn);
+    platformFees.push(platformFee);
     receipts.push(receiptUnits);
     nets.push(receiptUnits - paidUnits);
   }
@@ -583,7 +603,7 @@ export function simulateFixedOddsLifetime(input: MonteCarloInput): MonteCarloRep
   pullsList.sort((a, b) => a - b);
   const sortedNets = [...nets].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const sortedVolumes = [...volumes].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const sortedBurns = [...burns].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const sortedPlatformFees = [...platformFees].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const sortedReceipts = [...receipts].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   return {
@@ -597,7 +617,7 @@ export function simulateFixedOddsLifetime(input: MonteCarloInput): MonteCarloRep
       p90: percentile(pullsList, 90),
     },
     medianVolumeUnits: percentileBigint(sortedVolumes, 50),
-    medianBurnUnits: percentileBigint(sortedBurns, 50),
+    medianPlatformFeeUnits: percentileBigint(sortedPlatformFees, 50),
     medianReceiptsUnits: percentileBigint(sortedReceipts, 50),
     medianNetUnits: percentileBigint(sortedNets, 50),
     earlyNetUnits: percentileBigint(sortedNets, 10),
@@ -633,12 +653,12 @@ function deepClonePrizes(prizeEntries: PrizeEntry[]): PrizeEntry[] {
   ).map((entry: PrizeEntry) => ({
     ...entry,
     amountUnits: 'amountUnits' in entry ? BigInt(entry.amountUnits as unknown as string) : undefined,
-    referenceValueUnits:
-      'referenceValueUnits' in entry
-        ? BigInt(entry.referenceValueUnits as unknown as string)
+    usdgValueUnits:
+      'usdgValueUnits' in entry
+        ? BigInt(entry.usdgValueUnits as unknown as string)
         : undefined,
     tokenId: 'tokenId' in entry ? BigInt(entry.tokenId as unknown as string) : undefined,
-  }));
+  })) as PrizeEntry[];
 }
 
 /**
@@ -646,6 +666,9 @@ function deepClonePrizes(prizeEntries: PrizeEntry[]): PrizeEntry[] {
  */
 export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
   machine: FixedOddsMachine;
+  /** USDG cashback locked into escrow (USDG units). */
+  seededUsdgEscrowUnits: bigint;
+  /** RF cashback locked into escrow (RF units). */
   seededRfEscrowUnits: bigint;
   seededFriends: RareFriendMetadata[];
   events: LedgerEvent[];
@@ -674,12 +697,18 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
     throw new Error('Prize pool cannot be empty');
   }
 
+  // Robinhood-only: reject any cross-chain NFT prize before it can be published.
+  assertFundablePrizes(prizeEntries);
+
   const { totalPpm, noPrizePpm } = validateFixedOddsPrizes(prizeEntries);
 
+  let seededUsdgEscrowUnits = 0n;
   let seededRfEscrowUnits = 0n;
   const seededFriends: RareFriendMetadata[] = [];
   for (const entry of prizeEntries) {
-    if (entry.type === 'RF_PRIZE') {
+    if (entry.type === 'USDG_PRIZE') {
+      seededUsdgEscrowUnits += entry.amountUnits * BigInt(entry.initialQuantity);
+    } else if (entry.type === 'RF_PRIZE') {
       seededRfEscrowUnits += entry.amountUnits * BigInt(entry.initialQuantity);
     } else if (entry.type === 'FRIEND_PRIZE') {
       seededFriends.push({
@@ -688,7 +717,7 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
         familyName: entry.familyName,
         generation: entry.generation,
         spriteRows: entry.spriteRows,
-        demoReferenceValueUnits: entry.referenceValueUnits,
+        demoUsdgValueUnits: entry.usdgValueUnits,
         origin: entry.origin,
         chainId: entry.chainId,
         chainSlug: entry.chainSlug,
@@ -731,17 +760,23 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
     creatorAddress,
     status: 'READY',
     pullPriceUnits,
-    burnBps: 500n, // 5%
+    platformFeeBps: PLATFORM_FEE_BPS,
     initialPrizes: deepClonePrizes(prizeEntries),
     remainingPrizes: clonePrizes(prizeEntries),
     targetRtpBps,
     configuredRtpBps,
     liveAvailableRtpBps: configuredRtpBps,
     totalSpentUnits: 0n,
-    totalBurnedUnits: 0n,
+    totalPlatformFeeUnits: 0n,
+    primaryFeeUnits: 0n,
+    buybackFeeUnits: 0n,
     creatorReceiptsUnits: 0n,
+    usdgPrizesPaidUnits: 0n,
     rfPrizesPaidUnits: 0n,
     friendPrizesAwardedCount: 0,
+    escrowUsdgWithdrawnUnits: 0n,
+    escrowRfWithdrawnUnits: 0n,
+    escrowFriendsWithdrawnCount: 0,
     pullCount: 0,
     createdAt: now,
     isRulesLocked: false,
@@ -756,9 +791,23 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
       actorAddress: creatorAddress,
       timestamp: now,
       machineType: 'fixed_odds',
-      details: `Fixed Odds machine "${name}" created at pull price ${pullPriceUnits / 1000n} RF (configured RTP: ${(configuredRtpBps / 100).toFixed(2)}%, no-prize: ${formatOddsPpm(noPrizePpm)}, ${totalPpm / 10000}% configured across prizes)`,
+      details: `Fixed Odds machine "${name}" created at pull price ${formatUsdg(pullPriceUnits, { showSymbol: true })} (configured RTP: ${(configuredRtpBps / 100).toFixed(2)}%, no-prize: ${formatOddsPpm(noPrizePpm)}, ${totalPpm / 10000}% configured across prizes)`,
     },
   ];
+
+  if (seededUsdgEscrowUnits > 0n) {
+    events.push({
+      id: `evt-seed-usdg-${now}-${Math.random()}`,
+      machineId: id,
+      machineName: name,
+      type: 'USDG_SEEDED',
+      actorAddress: creatorAddress,
+      timestamp: now,
+      machineType: 'fixed_odds',
+      usdgAmountUnits: seededUsdgEscrowUnits,
+      details: `Escrowed ${formatUsdgGrouped(seededUsdgEscrowUnits)} in USDG cashback prize inventory`,
+    });
+  }
 
   if (seededRfEscrowUnits > 0n) {
     events.push({
@@ -770,7 +819,7 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
       timestamp: now,
       machineType: 'fixed_odds',
       rfAmountUnits: seededRfEscrowUnits,
-      details: `Seeded ${seededRfEscrowUnits / 1000n} RF in prize inventory`,
+      details: `Escrowed ${formatRFGrouped(seededRfEscrowUnits)} in $RAREFRIENDS cashback prize inventory`,
     });
   }
 
@@ -789,12 +838,12 @@ export function createFixedOddsMachine(params: CreateFixedOddsMachineParams): {
     });
   }
 
-  return { machine, seededRfEscrowUnits, seededFriends, events };
+  return { machine, seededUsdgEscrowUnits, seededRfEscrowUnits, seededFriends, events };
 }
 
 function buildSyntheticTicket(
   machine: FixedOddsMachine,
-  wonEntry: RFPrizeEntry | FriendPrizeEntry | null,
+  wonEntry: PrizeLineEntry | null,
   now: number
 ): Ticket {
   if (!wonEntry) {
@@ -802,7 +851,16 @@ function buildSyntheticTicket(
       id: `fixed-roll-${now}-${machine.pullCount}`,
       prizeType: 'NO_PRIZE',
       prizeEntryId: 'fixed-no-prize',
-      referenceValueUnits: 0n,
+      usdgValueUnits: 0n,
+    };
+  }
+  if (wonEntry.type === 'USDG_PRIZE') {
+    return {
+      id: `fixed-roll-${now}-${machine.pullCount}`,
+      prizeType: 'USDG_PRIZE',
+      prizeEntryId: wonEntry.id,
+      usdgAmountUnits: wonEntry.amountUnits,
+      usdgValueUnits: wonEntry.amountUnits,
     };
   }
   if (wonEntry.type === 'RF_PRIZE') {
@@ -811,7 +869,7 @@ function buildSyntheticTicket(
       prizeType: 'RF_PRIZE',
       prizeEntryId: wonEntry.id,
       rfAmountUnits: wonEntry.amountUnits,
-      referenceValueUnits: wonEntry.amountUnits,
+      usdgValueUnits: wonEntry.usdgValueUnits,
     };
   }
   return {
@@ -823,7 +881,7 @@ function buildSyntheticTicket(
     friendFamilyName: wonEntry.familyName,
     friendGeneration: wonEntry.generation,
     friendSpriteRows: wonEntry.spriteRows,
-    referenceValueUnits: wonEntry.referenceValueUnits,
+    usdgValueUnits: wonEntry.usdgValueUnits,
     friendOrigin: wonEntry.origin,
     friendChainId: wonEntry.chainId,
     friendContractAddress: wonEntry.contractAddress,
@@ -838,8 +896,8 @@ function buildSyntheticTicket(
 }
 
 function friendWonFromEntry(
-  entry: FriendPrizeEntry,
-  referenceValueUnits: bigint
+  entry: Extract<PrizeLineEntry, { type: 'FRIEND_PRIZE' }>,
+  usdgValueUnits: bigint
 ): RareFriendMetadata {
   return {
     tokenId: entry.tokenId,
@@ -847,7 +905,7 @@ function friendWonFromEntry(
     familyName: entry.familyName,
     generation: entry.generation,
     spriteRows: entry.spriteRows,
-    demoReferenceValueUnits: referenceValueUnits,
+    demoUsdgValueUnits: usdgValueUnits,
     origin: entry.origin,
     chainId: entry.chainId,
     contractAddress: entry.contractAddress,
@@ -881,12 +939,15 @@ export function pullFixedOddsMachine(
   if (machine.status === 'CANCELLED') {
     throw new Error('Machine has been CANCELLED.');
   }
+  if (machine.status === 'PAUSED') {
+    throw new Error('Machine is PAUSED by its creator. No pulls until it resumes.');
+  }
   if (isFixedOddsInventoryEmpty(machine.remainingPrizes)) {
     throw new Error('Machine is SOLD OUT. All prize inventory is gone.');
   }
   if (playerBalanceUnits < machine.pullPriceUnits) {
     throw new Error(
-      `Insufficient demo RF. Pull cost: ${machine.pullPriceUnits / 1000n} RF, balance: ${playerBalanceUnits / 1000n} RF`
+      `Insufficient USDG. Pull cost: ${formatUsdgGrouped(machine.pullPriceUnits)}, balance: ${formatUsdgGrouped(playerBalanceUnits)}`
     );
   }
 
@@ -905,8 +966,7 @@ export function pullFixedOddsMachine(
   const wonEntry =
     wonEntryId !== null
       ? (machine.remainingPrizes.find(
-          (p): p is RFPrizeEntry | FriendPrizeEntry =>
-            p.id === wonEntryId && (p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE')
+          (p): p is PrizeLineEntry => p.id === wonEntryId && isPrizeLinePredicate(p)
         ) ?? null)
       : null;
 
@@ -925,13 +985,16 @@ export function pullFixedOddsMachine(
   const totals = fixedOddsInventoryTotals(updatedRemainingPrizes, true);
   const initialTotals = fixedOddsInventoryTotals(machine.initialPrizes, false);
 
+  let usdgWonUnits = 0n;
   let rfWonUnits = 0n;
   let friendWon: RareFriendMetadata | undefined;
   const wonPrize = wonEntry !== null;
-  if (wonEntry?.type === 'RF_PRIZE') {
+  if (wonEntry?.type === 'USDG_PRIZE') {
+    usdgWonUnits = wonEntry.amountUnits;
+  } else if (wonEntry?.type === 'RF_PRIZE') {
     rfWonUnits = wonEntry.amountUnits;
   } else if (wonEntry?.type === 'FRIEND_PRIZE') {
-    friendWon = friendWonFromEntry(wonEntry, wonEntry.referenceValueUnits);
+    friendWon = friendWonFromEntry(wonEntry, wonEntry.usdgValueUnits);
   }
 
   const isSoldOut = totals.remaining === 0;
@@ -943,8 +1006,11 @@ export function pullFixedOddsMachine(
     remainingPrizes: updatedRemainingPrizes,
     liveAvailableRtpBps: newLiveAvailableRtpBps,
     totalSpentUnits: machine.totalSpentUnits + machine.pullPriceUnits,
-    totalBurnedUnits: machine.totalBurnedUnits + split.burnUnits,
+    totalPlatformFeeUnits: machine.totalPlatformFeeUnits + split.feeUnits,
+    primaryFeeUnits: machine.primaryFeeUnits + split.primaryFeeUnits,
+    buybackFeeUnits: machine.buybackFeeUnits + split.buybackFeeUnits,
     creatorReceiptsUnits: machine.creatorReceiptsUnits + split.creatorUnits,
+    usdgPrizesPaidUnits: machine.usdgPrizesPaidUnits + usdgWonUnits,
     rfPrizesPaidUnits: machine.rfPrizesPaidUnits + rfWonUnits,
     friendPrizesAwardedCount: machine.friendPrizesAwardedCount + (friendWon ? 1 : 0),
     pullCount: machine.pullCount + 1,
@@ -958,10 +1024,13 @@ export function pullFixedOddsMachine(
   const result: PullResult = {
     ticket,
     spentUnits: machine.pullPriceUnits,
-    burnedUnits: split.burnUnits,
+    platformFeeUnits: split.feeUnits,
+    primaryFeeUnits: split.primaryFeeUnits,
+    buybackFeeUnits: split.buybackFeeUnits,
     creatorReceiptUnits: split.creatorUnits,
     wonPrize,
     prizeType: wonEntry ? wonEntry.type : 'NO_PRIZE',
+    usdgWonUnits,
     rfWonUnits,
     friendWon,
     isSoldOut,
@@ -980,20 +1049,53 @@ export function pullFixedOddsMachine(
       timestamp: now,
       machineType: 'fixed_odds',
       rollPpm,
-      rfAmountUnits: machine.pullPriceUnits,
-      details: `Player pulled fixed-odds "${machine.name}" for ${machine.pullPriceUnits / 1000n} RF (roll ${formatOddsPpm(rollPpm)})`,
+      usdgAmountUnits: machine.pullPriceUnits,
+      details: `Player pulled fixed-odds "${machine.name}" for ${formatUsdgGrouped(machine.pullPriceUnits)} (roll ${formatOddsPpm(rollPpm)})`,
     },
     {
-      id: `evt-burn-${now}-${Math.random()}`,
+      id: `evt-fee-${now}-${Math.random()}`,
       machineId: machine.id,
       machineName: machine.name,
-      type: 'RF_BURNED',
+      type: 'PLATFORM_FEE_COLLECTED',
       actorAddress: playerAddress,
       timestamp: now,
       machineType: 'fixed_odds',
-      rfAmountUnits: split.burnUnits,
-      details: `Burned ${Number(split.burnUnits) / 1000} RF (5% fixed platform burn)`,
+      usdgAmountUnits: split.feeUnits,
+      details: `Platform fee ${formatUsdgGrouped(split.feeUnits)} (5.00% of spend)`,
     },
+    ...PLATFORM_FEE_RECIPIENTS.map(
+      (r, i): LedgerEvent =>
+        r.role === 'BUYBACK'
+          ? {
+              id: `evt-buyback-funded-${now}-${Math.random()}`,
+              machineId: machine.id,
+              machineName: machine.name,
+              type: 'RF_BUYBACK_FUNDED' as const,
+              // The pot is held by the fee router and spent on RF in a later
+              // batch, so nothing is routed to an address on this pull.
+              actorAddress: machine.creatorAddress,
+              timestamp: now,
+              machineType: 'fixed_odds' as const,
+              usdgAmountUnits: split.buybackFeeUnits,
+              details: `${r.shareLabel} of platform fee accrued to the RF buyback pot`,
+            }
+          : {
+              id: `evt-fee-split-${r.role}-${now}-${i}-${Math.random()}`,
+              machineId: machine.id,
+              machineName: machine.name,
+              type: 'PLATFORM_FEE_SPLIT' as const,
+              actorAddress: r.address,
+              timestamp: now,
+              machineType: 'fixed_odds' as const,
+              usdgAmountUnits: split.primaryFeeUnits,
+              feeRecipient: {
+                role: r.role,
+                address: r.address,
+                shareLabel: r.shareLabel,
+              },
+              details: `${r.shareLabel} of platform fee routed to ${r.address}`,
+            }
+    ),
     {
       id: `evt-credit-${now}-${Math.random()}`,
       machineId: machine.id,
@@ -1002,12 +1104,24 @@ export function pullFixedOddsMachine(
       actorAddress: machine.creatorAddress,
       timestamp: now,
       machineType: 'fixed_odds',
-      rfAmountUnits: split.creatorUnits,
-      details: `Operator received ${Number(split.creatorUnits) / 1000} RF proceeds (95%)`,
+      usdgAmountUnits: split.creatorUnits,
+      details: `Operator received ${formatUsdgGrouped(split.creatorUnits)} proceeds (95.00%)`,
     },
   ];
 
-  if (wonEntry?.type === 'RF_PRIZE' && rfWonUnits > 0n) {
+  if (wonEntry?.type === 'USDG_PRIZE' && usdgWonUnits > 0n) {
+    events.push({
+      id: `evt-usdg-won-${now}-${Math.random()}`,
+      machineId: machine.id,
+      machineName: machine.name,
+      type: 'USDG_PRIZE_PAID',
+      actorAddress: playerAddress,
+      timestamp: now,
+      machineType: 'fixed_odds',
+      usdgAmountUnits: usdgWonUnits,
+      details: `Player won ${formatUsdgGrouped(usdgWonUnits)} USDG cashback!`,
+    });
+  } else if (wonEntry?.type === 'RF_PRIZE' && rfWonUnits > 0n) {
     events.push({
       id: `evt-rf-won-${now}-${Math.random()}`,
       machineId: machine.id,
@@ -1017,7 +1131,8 @@ export function pullFixedOddsMachine(
       timestamp: now,
       machineType: 'fixed_odds',
       rfAmountUnits: rfWonUnits,
-      details: `Player won ${rfWonUnits / 1000n} RF!`,
+      usdgAmountUnits: ticket.usdgValueUnits,
+      details: `Player won ${formatRFGrouped(rfWonUnits)} $RAREFRIENDS cashback!`,
     });
   } else if (wonEntry?.type === 'FRIEND_PRIZE' && friendWon) {
     events.push({
@@ -1060,7 +1175,7 @@ export function pullFixedOddsMachine(
       actorAddress: machine.creatorAddress,
       timestamp: now,
       machineType: 'fixed_odds',
-      details: `Fixed Odds machine "${machine.name}" has SOLD OUT after ${updatedMachine.pullCount} pulls! Volume: ${updatedMachine.totalSpentUnits / 1000n} RF, burned: ${Number(updatedMachine.totalBurnedUnits) / 1000} RF${
+      details: `Fixed Odds machine "${machine.name}" has SOLD OUT after ${updatedMachine.pullCount} pulls! Volume: ${formatUsdgGrouped(updatedMachine.totalSpentUnits)}, platform fees: ${formatUsdgGrouped(updatedMachine.totalPlatformFeeUnits)}${
         realized ? `, realized payout ratio: ${(realized.ratioBps / 100).toFixed(2)}%` : ''
       }`,
     });

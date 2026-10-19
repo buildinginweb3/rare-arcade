@@ -1,151 +1,64 @@
 /**
- * Supported-chain registry for multi-chain NFT discovery.
+ * Settlement chain registry — RARE ARCADE is Robinhood Chain only.
  *
- * Source of truth: GET /api/v2/chains (cached 1h). Falls back to a curated
- * static list when the endpoint is unreachable so the picker still works.
+ * Rare Arcade was originally cross-chain: it scanned a wallet across up to
+ * six EVM chains and verified non-Robinhood ownership through OpenSea. That is
+ * gone, deliberately:
  *
- * Verified live 2026-09-28: OpenSea reports 30 chains including `robinhood`.
- * Chain slugs observed: ethereum, solana, optimism, unichain, polygon, monad,
- * shape, flow, stablechain, hyperevm, sei, hyperliquid, soneium, ronin,
- * abstract, megaeth, robinhood, somnia, arc, b3, base, ape_chain, arbitrum,
- * avalanche, gunzilla, ink, animechain, bera_chain, blast, zora.
+ *   1. One settlement chain means one escrow contract, one fee router, one
+ *      VRF subscription, and one source of on-chain truth. Multi-chain support
+ *      would multiply the contract surface and the failure modes.
+ *   2. Ownership now resolves through a single on-chain `ownerOf` read against
+ *      the Robinhood RPC for EVERY prize NFT, not just Rare Friends. Nothing
+ *      depends on trusting an indexer's ownership response.
+ *   3. Prize escrowing needs no per-chain branching — an NFT prize is always
+ *      `chainId 4663 / contract / tokenId`.
  *
- * Inventory fetching is CONTROLLED: callers fetch priority chains first with
- * a small concurrency pool, then optionally scan the rest. Never fire 30
- * parallel account requests on every render.
+ * `NftAsset.chain` / `chainId` fields are retained on stored records so old rows
+ * stay readable and the reservation keys stay stable, but every new asset is
+ * Robinhood by construction.
  */
 
 export interface ChainInfo {
   slug: string;
   name: string;
-  /** EVM chain id when known (non-EVM chains use undefined). */
-  chainId?: number;
+  chainId: number;
   nativeSymbol?: string;
 }
 
-/** EVM chain ids for chains where ownership RPC verification is feasible. */
-export const KNOWN_EVM_CHAIN_IDS: Record<string, number> = {
-  ethereum: 1,
-  optimism: 10,
-  base: 8453,
-  arbitrum: 42161,
-  polygon: 137,
-  unichain: 130,
-  blast: 81457,
-  zora: 7777777,
-  avalanche: 43114,
-  sei: 1329,
-  monad: 143,
-  ink: 57073,
-  shape: 360,
-  soneium: 1868,
-  b3: 8333,
-  ape_chain: 33139,
-  somnia: 5031,
-  megaeth: 4326,
-  hyperevm: 999,
-  robinhood: 4663,
+/** The one chain Rare Arcade settles on. */
+export const SETTLEMENT_CHAIN: ChainInfo = {
+  slug: 'robinhood',
+  name: 'Robinhood',
+  chainId: 4663,
 };
 
-export const ROBINHOOD_CHAIN_SLUG = 'robinhood';
-
-/** Priority order for wallet inventory scans (Robinhood first — home chain). */
-export const PRIORITY_CHAIN_ORDER = [
-  'robinhood',
-  'ethereum',
-  'base',
-  'polygon',
-  'arbitrum',
-  'optimism',
-];
-
-/** Static fallback when GET /chains fails (subset of verified live list). */
-export const FALLBACK_CHAINS: ChainInfo[] = [
-  { slug: 'robinhood', name: 'Robinhood', chainId: 4663 },
-  { slug: 'ethereum', name: 'Ethereum', chainId: 1, nativeSymbol: 'ETH' },
-  { slug: 'base', name: 'Base', chainId: 8453, nativeSymbol: 'ETH' },
-  { slug: 'polygon', name: 'Polygon', chainId: 137, nativeSymbol: 'POL' },
-  { slug: 'arbitrum', name: 'Arbitrum', chainId: 42161, nativeSymbol: 'ETH' },
-  { slug: 'optimism', name: 'Optimism', chainId: 10, nativeSymbol: 'ETH' },
-  { slug: 'unichain', name: 'Unichain', chainId: 130 },
-  { slug: 'blast', name: 'Blast' },
-  { slug: 'zora', name: 'Zora' },
-  { slug: 'avalanche', name: 'Avalanche' },
-  { slug: 'sei', name: 'Sei' },
-  { slug: 'solana', name: 'Solana' },
-];
-
-let cachedChains: { at: number; chains: ChainInfo[] } | null = null;
-const CHAINS_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-function toChainInfo(raw: Record<string, unknown>): ChainInfo | null {
-  const slug = typeof raw.chain === 'string' ? raw.chain : '';
-  if (!slug) return null;
-  const name = typeof raw.name === 'string' && raw.name ? raw.name : slug;
-  const nativeSymbol = typeof raw.symbol === 'string' ? raw.symbol : undefined;
-  return { slug, name, chainId: KNOWN_EVM_CHAIN_IDS[slug], nativeSymbol };
-}
+export const SETTLEMENT_CHAIN_SLUG = SETTLEMENT_CHAIN.slug;
+export const SETTLEMENT_CHAIN_ID = SETTLEMENT_CHAIN.chainId;
+export const SETTLEMENT_CHAIN_NAME = SETTLEMENT_CHAIN.name;
 
 /**
- * Fetch the current OpenSea supported-chain list.
- * `fetcher` defaults to the OpenSea GET /chains endpoint via marketData's
- * authenticated fetch; injectable for tests.
+ * The only chains whose NFTs can be funded into a machine. Single-entry by
+ * design — see the module header.
  */
-export async function getSupportedChains(
-  fetcher?: () => Promise<unknown>
-): Promise<ChainInfo[]> {
-  const now = Date.now();
-  if (cachedChains && now - cachedChains.at < CHAINS_TTL_MS) {
-    return cachedChains.chains;
-  }
-  if (fetcher) {
-    try {
-      const data = (await fetcher()) as { chains?: unknown[] };
-      const chains = Array.isArray(data.chains)
-        ? data.chains
-            .map((c) => toChainInfo(c as Record<string, unknown>))
-            .filter((c): c is ChainInfo => !!c)
-        : [];
-      if (chains.length > 0) {
-        // Robinhood first, then priority order, then alphabetical.
-        const rank = (s: string) => {
-          const i = PRIORITY_CHAIN_ORDER.indexOf(s);
-          return i === -1 ? 100 + s.localeCompare('robinhood') : i;
-        };
-        chains.sort((a, b) => rank(a.slug) - rank(b.slug));
-        cachedChains = { at: now, chains };
-        return chains;
-      }
-    } catch {
-      // fall through to fallback
-    }
-  }
-  if (cachedChains) return cachedChains.chains;
-  return FALLBACK_CHAINS;
+export const FUNDABLE_CHAIN_SLUGS: readonly string[] = [SETTLEMENT_CHAIN_SLUG];
+
+/** Legacy alias. Kept so older imports keep compiling. */
+export const ROBINHOOD_CHAIN_SLUG = SETTLEMENT_CHAIN_SLUG;
+/** Legacy alias. */
+export const ROBINHOOD_CHAIN_ID = SETTLEMENT_CHAIN_ID;
+
+/** True when a chain slug may be funded into a machine. */
+export function isFundableChain(slug: string | null | undefined): boolean {
+  return FUNDABLE_CHAIN_SLUGS.includes((slug ?? '').trim().toLowerCase());
 }
 
-/** Order chain slugs: priority chains first, rest alphabetical. */
+/** The chain scan used for wallet inventory discovery. */
+export function defaultScanChains(): string[] {
+  return [SETTLEMENT_CHAIN_SLUG];
+}
+
+/** Legacy ordering helper. Every fundable slug is the settlement chain. */
 export function orderChainsForScan(slugs: string[]): string[] {
-  const rank = (s: string) => {
-    const i = PRIORITY_CHAIN_ORDER.indexOf(s);
-    return i === -1 ? 1000 : i;
-  };
-  return [...slugs].sort((a, b) => {
-    const ra = rank(a);
-    const rb = rank(b);
-    if (ra !== rb) return ra - rb;
-    return a.localeCompare(b);
-  });
-}
-
-/** Default inventory scan set: priority chains (controlled, not all 30). */
-export function defaultScanChains(all?: ChainInfo[]): string[] {
-  const slugs = (all ?? FALLBACK_CHAINS).map((c) => c.slug);
-  const prioritized = PRIORITY_CHAIN_ORDER.filter((s) => slugs.includes(s));
-  return prioritized.length > 0 ? prioritized : slugs.slice(0, 6);
-}
-
-/** Clear the in-memory chain cache (tests). */
-export function __clearChainCache(): void {
-  cachedChains = null;
+  return slugs.filter(isFundableChain);
 }

@@ -13,7 +13,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Grim Hollow',
     familyName: 'Skeleton',
     generation: 1,
-    demoReferenceValueUnits: 75000n, // 75 RF
+    demoUsdgValueUnits: 150000n, // $75 USDG
     spriteRows: [
       '....########....',
       '..############..',
@@ -38,7 +38,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Cyber Mask',
     familyName: 'Mask',
     generation: 1,
-    demoReferenceValueUnits: 120000n, // 120 RF
+    demoUsdgValueUnits: 240000n, // $120 USDG
     spriteRows: [
       '....########....',
       '..############..',
@@ -63,7 +63,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Nano Core',
     familyName: 'Cellular',
     generation: 2,
-    demoReferenceValueUnits: 95000n, // 95 RF
+    demoUsdgValueUnits: 190000n, // $95 USDG
     spriteRows: [
       '......####......',
       '....########....',
@@ -88,7 +88,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Aero Wisp',
     familyName: 'Hoverer',
     generation: 1,
-    demoReferenceValueUnits: 150000n, // 150 RF
+    demoUsdgValueUnits: 300000n, // $150 USDG
     spriteRows: [
       '....########....',
       '..############..',
@@ -113,7 +113,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Iron Behemoth',
     familyName: 'Colossus',
     generation: 1,
-    demoReferenceValueUnits: 250000n, // 250 RF
+    demoUsdgValueUnits: 500000n, // $250 USDG
     spriteRows: [
       '################',
       '################',
@@ -138,7 +138,7 @@ export const DEMO_RARE_FRIENDS: RareFriendMetadata[] = [
     name: 'Starlight Sprite',
     familyName: 'Sparkling',
     generation: 2,
-    demoReferenceValueUnits: 180000n, // 180 RF
+    demoUsdgValueUnits: 360000n, // $180 USDG
     spriteRows: [
       '.......##.......',
       '.....######.....',

@@ -4,7 +4,9 @@
  * Uses strict fixed-point integer math to avoid JS floating-point rounding errors.
  */
 
-import { BPS_DIVISOR, BURN_BPS, CREATOR_BPS, mulBps } from './rf.ts';
+import { BPS_DIVISOR, mulBps, formatRF } from './rf.ts';
+import { formatUsdg } from './usdg.ts';
+import { PLATFORM_FEE_BPS, CREATOR_RECEIPTS_BPS, splitPlatformFee } from './fees.ts';
 import type { PrizeEntry } from './types.ts';
 
 export const DEFAULT_TARGET_RTP_BPS = 9000; // 90.00%
@@ -17,9 +19,10 @@ export const DEFAULT_TARGET_RTP_BPS = 9000; // 90.00%
  */
 export const MIN_ALLOWED_RTP_BPS = 7500; // 75.00%
 /** @deprecated See MIN_ALLOWED_RTP_BPS. */
-export const MAX_ALLOWED_RTP_BPS = 9500; // 95.00% (at 95%, operator margin = 0% since 5% is burned)
+export const MAX_ALLOWED_RTP_BPS = 9500; // 95.00% (at 95%, operator margin = 0% after the 5% fee)
 
 export interface EconomicsSummary {
+  /** USDG internal units. */
   pullPriceUnits: bigint;
   totalPulls: number;
   remainingPulls: number;
@@ -33,13 +36,15 @@ export interface EconomicsSummary {
   initialRtpBps: number;
   currentRtpBps: number;
 
-  burnBps: number; // 500 (5%)
+  platformFeeBps: number; // 500 (5.00%)
   initialOperatorMarginBps: number; // 9500 - initialRtpBps
   currentOperatorMarginBps: number; // 9500 - currentRtpBps
 
-  // Sellout projections
+  // Sellout projections (all USDG internal units)
   grossVolumeAtSelloutUnits: bigint;
-  burnAtSelloutUnits: bigint;
+  platformFeeAtSelloutUnits: bigint;
+  primaryFeeAtSelloutUnits: bigint;
+  buybackFeeAtSelloutUnits: bigint;
   creatorReceiptsAtSelloutUnits: bigint;
   netCreatorReferenceProfitAtSelloutUnits: bigint;
 }
@@ -53,11 +58,17 @@ export interface PrizeOddsItem {
   initialQuantity: number;
   probabilityBps: number; // in bps (e.g. 235 = 2.35%)
   probabilityPct: string; // "2.35%"
-  referenceValueUnits: bigint;
+  /** EV reference value in USDG internal units. */
+  usdgValueUnits: bigint;
 }
 
 /**
- * Calculates total reference prize value for a list of prize entries.
+ * Total reference prize value in USDG internal units, across cashback and NFTs.
+ *
+ * Every prize is valued in USDG regardless of payout currency: USDG cashback
+ * values at face, RF cashback uses its immutable seed-time snapshot, and NFTs
+ * use their locked top-bid snapshot. That keeps one accounting currency for
+ * RTP/EV even when a machine pays out a mix of USDG, RF and NFTs.
  */
 export function calculateTotalPrizeValue(
   entries: readonly PrizeEntry[],
@@ -70,10 +81,12 @@ export function calculateTotalPrizeValue(
       continue;
     }
 
-    if (entry.type === 'RF_PRIZE') {
+    if (entry.type === 'USDG_PRIZE') {
       total += entry.amountUnits * qty;
+    } else if (entry.type === 'RF_PRIZE') {
+      total += entry.usdgValueUnits * qty;
     } else if (entry.type === 'FRIEND_PRIZE') {
-      total += entry.referenceValueUnits * qty;
+      total += entry.usdgValueUnits * qty;
     }
   }
   return total;
@@ -202,16 +215,18 @@ export function calculateMachineEconomics(
   const initialRtpBps = calculateRtpBps(initialEvUnits, pullPriceUnits);
   const currentRtpBps = calculateRtpBps(currentEvUnits, pullPriceUnits);
 
-  const burnBps = Number(BURN_BPS); // 500
-  const creatorBps = Number(CREATOR_BPS); // 9500
+  const platformFeeBps = Number(PLATFORM_FEE_BPS); // 500
+  const creatorBps = Number(CREATOR_RECEIPTS_BPS); // 9500
 
   const initialOperatorMarginBps = creatorBps - initialRtpBps;
   const currentOperatorMarginBps = creatorBps - currentRtpBps;
 
   // Projections at sellout
   const grossVolumeAtSelloutUnits = pullPriceUnits * BigInt(totalPulls);
-  const burnAtSelloutUnits = mulBps(grossVolumeAtSelloutUnits, BURN_BPS);
-  const creatorReceiptsAtSelloutUnits = grossVolumeAtSelloutUnits - burnAtSelloutUnits;
+  const platformFeeAtSelloutUnits = mulBps(grossVolumeAtSelloutUnits, PLATFORM_FEE_BPS);
+  const { primaryUnits: primaryFeeAtSelloutUnits, buybackUnits: buybackFeeAtSelloutUnits } =
+    splitPlatformFee(platformFeeAtSelloutUnits);
+  const creatorReceiptsAtSelloutUnits = grossVolumeAtSelloutUnits - platformFeeAtSelloutUnits;
   const netCreatorReferenceProfitAtSelloutUnits =
     creatorReceiptsAtSelloutUnits - totalPrizeUnits;
 
@@ -225,11 +240,13 @@ export function calculateMachineEconomics(
     currentEvUnits,
     initialRtpBps,
     currentRtpBps,
-    burnBps,
+    platformFeeBps,
     initialOperatorMarginBps,
     currentOperatorMarginBps,
     grossVolumeAtSelloutUnits,
-    burnAtSelloutUnits,
+    platformFeeAtSelloutUnits,
+    primaryFeeAtSelloutUnits,
+    buybackFeeAtSelloutUnits,
     creatorReceiptsAtSelloutUnits,
     netCreatorReferenceProfitAtSelloutUnits,
   };
@@ -268,14 +285,18 @@ export function calculateLiveOdds(
     let detail = '';
     let refVal = 0n;
 
-    if (entry.type === 'RF_PRIZE') {
-      label = `${entry.amountUnits / 1000n} RF`;
-      detail = 'Simulated Token Reward';
+    if (entry.type === 'USDG_PRIZE') {
+      label = `${formatUsdg(entry.amountUnits, { decimals: 2 })} USDG`;
+      detail = 'USDG Reward';
       refVal = entry.amountUnits;
+    } else if (entry.type === 'RF_PRIZE') {
+      label = `${formatRF(entry.amountUnits, { decimals: 2 })} RF`;
+      detail = '$RAREFRIENDS Reward';
+      refVal = entry.usdgValueUnits;
     } else if (entry.type === 'FRIEND_PRIZE') {
       label = entry.name;
       detail = `${entry.familyName} (Gen ${entry.generation})`;
-      refVal = entry.referenceValueUnits;
+      refVal = entry.usdgValueUnits;
     } else if (entry.type === 'NO_PRIZE') {
       label = 'Try Again';
       detail = 'No prize awarded';
@@ -291,7 +312,7 @@ export function calculateLiveOdds(
       initialQuantity: entry.initialQuantity,
       probabilityBps: bps,
       probabilityPct: (bps / 100).toFixed(2) + '%',
-      referenceValueUnits: refVal,
+      usdgValueUnits: refVal,
     });
   }
 
@@ -308,7 +329,7 @@ export function calculateLiveOdds(
       initialQuantity: emptyTickets,
       probabilityBps: emptyBps,
       probabilityPct: (emptyBps / 100).toFixed(2) + '%',
-      referenceValueUnits: 0n,
+      usdgValueUnits: 0n,
     });
   }
 
@@ -317,12 +338,18 @@ export function calculateLiveOdds(
 
 /**
  * Economic scenario projection (e.g. 25%, 50%, 100% sellout).
+ * All amounts are USDG internal units.
  */
 export interface ScenarioProjection {
   percentLabel: string;
   pulls: number;
   grossVolumeUnits: bigint;
-  burnUnits: bigint;
+  /** Total 5% platform fee. */
+  platformFeeUnits: bigint;
+  /** 75% of the fee to the primary treasury. */
+  primaryFeeUnits: bigint;
+  /** 25% of the fee funding RF buybacks. */
+  buybackFeeUnits: bigint;
   creatorReceiptsUnits: bigint;
 }
 
@@ -339,14 +366,17 @@ export function calculateScenarios(
   return steps.map((step) => {
     const pulls = Math.max(1, Math.round(totalPulls * step.factor));
     const grossVolumeUnits = pullPriceUnits * BigInt(pulls);
-    const burnUnits = mulBps(grossVolumeUnits, BURN_BPS);
-    const creatorReceiptsUnits = grossVolumeUnits - burnUnits;
+    const platformFeeUnits = mulBps(grossVolumeUnits, PLATFORM_FEE_BPS);
+    const { primaryUnits, buybackUnits } = splitPlatformFee(platformFeeUnits);
+    const creatorReceiptsUnits = grossVolumeUnits - platformFeeUnits;
 
     return {
       percentLabel: step.label,
       pulls,
       grossVolumeUnits,
-      burnUnits,
+      platformFeeUnits,
+      primaryFeeUnits: primaryUnits,
+      buybackFeeUnits: buybackUnits,
       creatorReceiptsUnits,
     };
   });

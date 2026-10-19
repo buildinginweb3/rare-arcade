@@ -151,7 +151,7 @@ describe('one canonical token art (RfTokenIcon.tsx)', () => {
       'src/components/machine/PrizeReveal.tsx',
       'src/pages/CreatorDashboard.tsx',
       'src/pages/PlayerInventoryPage.tsx',
-      'src/components/machine/RfBurnVisual.tsx',
+      'src/components/machine/PlatformFeeVisual.tsx',
     ];
     for (const file of consumers) {
       const src = readFileSync(resolve(process.cwd(), file), 'utf8');

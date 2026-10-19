@@ -1,10 +1,11 @@
 import React from 'react';
 import type { PlayerInventory } from '../domain/types.ts';
 import { formatRFGrouped } from '../domain/rf.ts';
+import { formatUsdgGrouped } from '../domain/usdg.ts';
 import { PixelIcon } from '../components/ui/PixelIcon.tsx';
 import { RfTokenIcon } from '../components/ui/RfTokenIcon.tsx';
 import { FriendPrizeVisual, nftIdentityLine } from '../nfts/FriendPrizeVisual.tsx';
-import { selectWonRfPrizes } from '../domain/wonPrizes.ts';
+import { selectWonCashbackPrizes } from '../domain/wonPrizes.ts';
 
 interface PlayerInventoryPageProps {
   inventory: PlayerInventory;
@@ -19,8 +20,8 @@ export const PlayerInventoryPage: React.FC<PlayerInventoryPageProps> = ({
   // recovered from the pull history and folded per machine. They are
   // showcased with the same $RF coin a machine shows when its top prize
   // is a token, so a token win is a first-class prize here too.
-  const wonRfPrizes = selectWonRfPrizes(inventory);
-  const wonPrizeCount = inventory.wonFriends.length + wonRfPrizes.length;
+  const wonCashback = selectWonCashbackPrizes(inventory);
+  const wonPrizeCount = inventory.wonFriends.length + wonCashback.length;
 
   return (
     <div style={{ maxWidth: '1050px', margin: '0 auto', padding: '20px 16px' }}>
@@ -55,7 +56,7 @@ export const PlayerInventoryPage: React.FC<PlayerInventoryPageProps> = ({
             DEMO RF BALANCE
           </div>
           <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
-            {formatRFGrouped(inventory.rfBalanceUnits)}
+            {formatUsdgGrouped(inventory.usdgBalanceUnits)}
           </div>
           </div>
         </div>
@@ -97,17 +98,21 @@ export const PlayerInventoryPage: React.FC<PlayerInventoryPageProps> = ({
               gap: '14px',
             }}
           >
-            {/* $RF token wins, same coin a machine shows for a token top prize. */}
-            {wonRfPrizes.map((prize) => (
-              <div key={`rf-${prize.machineId}`} className="friend-card">
+            {/* Reward wins, same coin a machine shows for a reward top prize. */}
+            {wonCashback.map((prize) => (
+              <div key={`${prize.machineId}-${prize.currency}`} className="friend-card">
                 <div style={{ display: 'flex', justifyContent: 'center' }}>
                   <RfTokenIcon size={120} />
                 </div>
+                {/* Amounts are always formatted in the currency they were won in. */}
                 <div style={{ fontWeight: 'bold', fontSize: '12px', marginTop: '8px' }}>
-                  {formatRFGrouped(prize.totalUnits)}
+                  {prize.currency === 'USDG'
+                    ? formatUsdgGrouped(prize.totalUnits)
+                    : formatRFGrouped(prize.totalUnits)}
                 </div>
                 <div style={{ fontSize: '9px', color: '#555', fontFamily: 'var(--font-lcd)', marginTop: '2px' }}>
-                  $RAREFRIENDS • {prize.wins === 1 ? '1 WIN' : `${prize.wins} WINS`}
+                  {prize.currency === 'USDG' ? 'USDG REWARDS' : '$RAREFRIENDS REWARDS'} •{' '}
+                  {prize.wins === 1 ? '1 WIN' : `${prize.wins} WINS`}
                 </div>
                 <div style={{ fontSize: '9px', color: '#555', fontFamily: 'var(--font-lcd)', marginTop: '2px' }}>
                   WON FROM {prize.machineName}
@@ -184,7 +189,7 @@ export const PlayerInventoryPage: React.FC<PlayerInventoryPageProps> = ({
                 <th>TIME</th>
                 <th>MACHINE</th>
                 <th>COST</th>
-                <th>BURNED (5%)</th>
+                <th>PLATFORM FEE (5%)</th>
                 <th>RESULT</th>
               </tr>
             </thead>
@@ -195,8 +200,8 @@ export const PlayerInventoryPage: React.FC<PlayerInventoryPageProps> = ({
                     {new Date(entry.timestamp).toLocaleTimeString()}
                   </td>
                   <td style={{ fontWeight: 'bold' }}>{entry.machineName}</td>
-                  <td>{formatRFGrouped(entry.result.spentUnits)}</td>
-                  <td>{formatRFGrouped(entry.result.burnedUnits)}</td>
+                  <td>{formatUsdgGrouped(entry.result.spentUnits)}</td>
+                  <td>{formatUsdgGrouped(entry.result.platformFeeUnits)}</td>
                   <td style={{ fontWeight: 'bold' }}>
                     {entry.result.prizeType === 'FRIEND_PRIZE' ? (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

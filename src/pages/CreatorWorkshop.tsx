@@ -14,6 +14,14 @@ import {
   formatRFGrouped,
 } from '../domain/rf.ts';
 import {
+  parseUsdg,
+  formatUsdg,
+  formatUsdgGrouped,
+  rfToUsdgUnits,
+} from '../domain/usdg.ts';
+import { describeRfQuote, isFallbackQuote } from '../domain/rfPricing.ts';
+import { useRfPrice } from '../nfts/useRfPrice.ts';
+import {
   calculateTotalPrizeValue,
   solveRecommendedPulls,
   calculateScenarios,
@@ -48,16 +56,17 @@ import { nftCardKey } from '../nfts/NftInventoryGrid.tsx';
 import { NftPicker, nftPickerKey } from '../nfts/NftPicker.tsx';
 import { usePricedInventory } from '../nfts/useOwnedNfts.ts';
 import { verifyNftOwnerGeneric } from '../nfts/apiClient.ts';
+import { isFundableChain } from '../nfts/chains.ts';
 import { connectWallet } from '../nfts/wallet.ts';
 import { normalizeAddress, nftReservationKey } from '../nfts/collections.ts';
 import { detectGenerationTrait, bidBadgeLabel } from '../nfts/normalize.ts';
 import { buildNftPrizeEntry } from '../nfts/prizeEntry.ts';
-import { getCollectionTopBid, getGenerationTopBid, getRareFriendsUsdPrice } from '../nfts/marketData.ts';
+import { getCollectionTopBid, getGenerationTopBid } from '../nfts/marketData.ts';
 import { GENERATIONS_CONTRACT } from '../nfts/collections.ts';
 import {
-  convertUsdToRfUnits,
+  convertUsdToUsdgUnits,
   formatUsdAdaptive,
-  formatRfReferenceCompact,
+  formatUsdgReferenceCompact,
   isFreshEnoughForPublish,
 } from '../nfts/valuation.ts';
 import type { NftAsset } from '../nfts/types.ts';
@@ -65,6 +74,9 @@ import { soundFx } from '../utils/audio.ts';
 
 interface CreatorWorkshopProps {
   creatorAddress: string;
+  /** USDG available to escrow (the play currency). */
+  creatorUsdgBalanceUnits: bigint;
+  /** $RAREFRIENDS available to escrow as optional RF rewards. */
   creatorRfBalanceUnits: bigint;
   /** Connected wallet used for NFT ownership (null = not connected). */
   walletAddress: string | null;
@@ -74,6 +86,7 @@ interface CreatorWorkshopProps {
   reservedNftKeys: Set<string>;
   onPublishMachine: (
     machine: Machine,
+    usdgEscrow: bigint,
     rfEscrow: bigint,
     friendsSeeded: RareFriendMetadata[],
     events: LedgerEvent[]
@@ -130,6 +143,7 @@ const MACHINE_TYPE_OPTIONS: {
 
 export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
   creatorAddress,
+  creatorUsdgBalanceUnits,
   creatorRfBalanceUnits,
   walletAddress,
   onConnectWallet,
@@ -157,11 +171,20 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
 
   // Prize pool state
   const [prizes, setPrizes] = useState<PrizeEntry[]>([]);
+  // Reward currency selector. USDG is the default (stable); $RAREFRIENDS is
+  // available as an equal option, and both can be loaded into one machine.
+  const [rewardCurrency, setRewardCurrency] = useState<'USDG' | 'RF'>('USDG');
+  const [usdgRewardAmountStr, setUsdgPrizeAmountStr] = useState<string>(
+    RARE_ARCADE_DEMO_ECONOMY.defaultUsdgPrizeStr
+  );
+  const [usdgRewardQty, setUsdgPrizeQty] = useState<number>(
+    RARE_ARCADE_DEMO_ECONOMY.defaultUsdgPrizeQty
+  );
   const [rfPrizeAmountStr, setRfPrizeAmountStr] = useState<string>(
     RARE_ARCADE_DEMO_ECONOMY.defaultRfPrizeStr
   );
   const [rfPrizeQty, setRfPrizeQty] = useState<number>(RARE_ARCADE_DEMO_ECONOMY.defaultRfPrizeQty);
-  // Fixed-odds chance per pull for the RF add-form (percent string).
+  // Fixed-odds chance per pull for the reward add-form (percent string).
   const [rfOddsStr, setRfOddsStr] = useState<string>('1');
 
   // Fixed Odds step-3 state
@@ -198,6 +221,10 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
   const previewReduced = useReducedMotion();
 
   const { fetchState, priced, reload, refreshPrices, verifyAsset } = usePricedInventory(walletAddress);
+  // RF rewards lock their USDG value at the live RF price, so the
+  // workshop needs this feed — it is the only volatile input to published RTP.
+  const rfPrice = useRfPrice();
+  const rfQuote = rfPrice.quote;
   const wallet = normalizeAddress(walletAddress ?? '');
 
   // Escape closes the NFT drawer.
@@ -240,7 +267,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     if (t === 'fixed_odds') {
       setPrizes((prev) =>
         prev.map((p) =>
-          p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE'
+          p.type === 'USDG_PRIZE' || p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE'
             ? { ...p, oddsPpm: p.oddsPpm ?? 10000 }
             : p
         )
@@ -255,7 +282,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     if (!isFixed) return null;
     let totalPpm = 0;
     for (const p of prizes) {
-      if (p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE') {
+      if (p.type === 'USDG_PRIZE' || p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE') {
         const ppm = p.oddsPpm ?? 0;
         if (Number.isInteger(ppm) && ppm > 0) totalPpm += ppm;
       }
@@ -266,7 +293,8 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
   const updatePrizeOdds = (id: string, ppm: number) => {
     setPrizes((prev) =>
       prev.map((p) =>
-        p.id === id && (p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE')
+        p.id === id &&
+        (p.type === 'USDG_PRIZE' || p.type === 'RF_PRIZE' || p.type === 'FRIEND_PRIZE')
           ? { ...p, oddsPpm: ppm }
           : p
       )
@@ -278,7 +306,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     const safe = Math.max(1, Math.min(10000, Math.floor(qty) || 1));
     setPrizes((prev) =>
       prev.map((p) =>
-        p.id === id && p.type === 'RF_PRIZE'
+        p.id === id && (p.type === 'USDG_PRIZE' || p.type === 'RF_PRIZE')
           ? { ...p, initialQuantity: safe, remainingQuantity: safe }
           : p
       )
@@ -288,7 +316,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
   // Calculations
   const pullPriceUnits = (() => {
     try {
-      const p = parseRF(pullPriceStr || '0');
+      const p = parseUsdg(pullPriceStr || '0');
       return p > 0n ? p : RARE_ARCADE_DEMO_ECONOMY.defaultPullPriceUnits;
     } catch {
       return RARE_ARCADE_DEMO_ECONOMY.defaultPullPriceUnits;
@@ -324,12 +352,19 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     }
   }, [isFixed, prizes, pullPriceUnits]);
 
-  // Total RF required for prize escrow
+  // Escrow required, tracked per currency: USDG rewards come out of the USDG
+  // balance, RF rewards out of the separate RF reserve.
+  const usdgEscrowRequiredUnits = prizes
+    .filter((p) => p.type === 'USDG_PRIZE')
+    .reduce((acc, p) => acc + ('amountUnits' in p ? p.amountUnits * BigInt(p.initialQuantity) : 0n), 0n);
+
   const rfEscrowRequiredUnits = prizes
     .filter((p) => p.type === 'RF_PRIZE')
     .reduce((acc, p) => acc + ('amountUnits' in p ? p.amountUnits * BigInt(p.initialQuantity) : 0n), 0n);
 
+  const hasEnoughUsdg = creatorUsdgBalanceUnits >= usdgEscrowRequiredUnits;
   const hasEnoughRf = creatorRfBalanceUnits >= rfEscrowRequiredUnits;
+  const hasEnoughFunds = hasEnoughUsdg && hasEnoughRf;
 
   const handleConnect = async () => {
     setErrorMsg('');
@@ -342,15 +377,17 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     }
   };
 
-  // Add RF Prize
-  const handleAddRfPrize = () => {
+  /**
+   * Add a reward in whichever currency is selected. USDG is the default
+   * because it is stable; RF rewards can be stacked on top, and their USDG
+   * value is locked HERE at seed time so published RTP never drifts with the
+   * volatile RF market.
+   */
+  const handleAddReward = () => {
     try {
-      const amountUnits = parseRF(rfPrizeAmountStr);
-      if (amountUnits <= 0n) {
-        setErrorMsg('RF prize amount must be > 0');
-        return;
-      }
-      if (rfPrizeQty <= 0) {
+      const qty = rewardCurrency === 'USDG' ? usdgRewardQty : rfPrizeQty;
+      const amountStr = rewardCurrency === 'USDG' ? usdgRewardAmountStr : rfPrizeAmountStr;
+      if (qty <= 0) {
         setErrorMsg('Quantity must be at least 1');
         return;
       }
@@ -364,14 +401,55 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
         }
       }
 
-      const newEntry: PrizeEntry = {
-        id: `prize-rf-${Date.now()}-${Math.random()}`,
-        type: 'RF_PRIZE',
-        amountUnits,
-        initialQuantity: rfPrizeQty,
-        remainingQuantity: rfPrizeQty,
-        ...(oddsPpm !== undefined ? { oddsPpm } : {}),
-      };
+      let newEntry: PrizeEntry;
+      if (rewardCurrency === 'USDG') {
+        const amountUnits = parseUsdg(amountStr);
+        if (amountUnits <= 0n) {
+          setErrorMsg('USDG reward amount must be > 0');
+          return;
+        }
+        newEntry = {
+          id: `prize-usdg-${Date.now()}-${Math.random()}`,
+          type: 'USDG_PRIZE',
+          amountUnits,
+          initialQuantity: qty,
+          remainingQuantity: qty,
+          ...(oddsPpm !== undefined ? { oddsPpm } : {}),
+        };
+      } else {
+        const amountUnits = parseRF(amountStr);
+        if (amountUnits <= 0n) {
+          setErrorMsg('RF reward amount must be > 0');
+          return;
+        }
+        // Lock this RF amount's USDG value at the current RF price. The rate
+        // is stored on the prize so a machine published on a fallback rate is
+        // auditable long after the RF market has moved on.
+        const usdgValueUnits = rfToUsdgUnits(amountUnits, rfQuote.usdgPerRf);
+        if (usdgValueUnits <= 0n) {
+          setErrorMsg('RF reward could not be valued in USDG. Check the amount.');
+          return;
+        }
+        if (isFallbackQuote(rfQuote)) {
+          // Never silently mis-price: say what rate was used and why.
+          setErrorMsg(
+            `RF price is unavailable — this reward was valued at the FALLBACK rate of $${rfQuote.usdgPerRf}/RF. Its RTP will be wrong if RF has moved. Refresh the RF price, or remove the prize.`
+          );
+          return;
+        }
+        newEntry = {
+          id: `prize-rf-${Date.now()}-${Math.random()}`,
+          type: 'RF_PRIZE',
+          amountUnits,
+          usdgValueUnits,
+          rfPriceUsdg: rfQuote.usdgPerRf,
+          rfPriceSource: rfQuote.source,
+          rfPriceValuedAt: rfQuote.valuedAt ?? undefined,
+          initialQuantity: qty,
+          remainingQuantity: qty,
+          ...(oddsPpm !== undefined ? { oddsPpm } : {}),
+        };
+      }
 
       setPrizes([...prizes, newEntry]);
       setErrorMsg('');
@@ -451,11 +529,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
           );
           return;
         }
-        if (p.state === 'rf_unavailable') {
-          setErrorMsg('$RF PRICE UNAVAILABLE — retry once the $RAREFRIENDS market price resolves.');
-          return;
-        }
-        if (p.referenceRfUnits === undefined || p.referenceRfUnits <= 0n) {
+        if (p.usdgValueUnits === undefined || p.usdgValueUnits <= 0n) {
           setErrorMsg(
             `"${a.name}" currently has no OpenSea top bid, so Rare Arcade cannot use it in RTP calculations yet. Deselect it to continue.`
           );
@@ -479,14 +553,13 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       }
       const newEntries = verifiedList.map((verified) => {
         const pricing = verified.pricing;
-        if (!pricing || pricing.state !== 'priced' || pricing.referenceRfUnits === undefined) {
+        if (!pricing || pricing.state !== 'priced' || pricing.usdgValueUnits === undefined) {
           throw new Error(`Valuation changed for "${verified.name}" — retry.`);
         }
         return buildNftPrizeEntry({
           asset: verified,
           pricing,
-          refValUnits: pricing.referenceRfUnits,
-          rfUsdFallback: priced.rfUsd,
+          usdgValueUnits: pricing.usdgValueUnits,
           oddsPpm,
         });
       });
@@ -519,9 +592,15 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       setErrorMsg('Machine must have at least one prize.');
       return;
     }
+    if (!hasEnoughUsdg) {
+      setErrorMsg(
+        `Insufficient USDG for prize escrow. Required: ${formatUsdgGrouped(usdgEscrowRequiredUnits)}, available: ${formatUsdgGrouped(creatorUsdgBalanceUnits)}`
+      );
+      return;
+    }
     if (!hasEnoughRf) {
       setErrorMsg(
-        `Insufficient RF balance for prize escrow. Required: ${formatRFGrouped(rfEscrowRequiredUnits)}, available: ${formatRFGrouped(creatorRfBalanceUnits)}`
+        `Insufficient $RAREFRIENDS for prize escrow. Required: ${formatRFGrouped(rfEscrowRequiredUnits)}, available: ${formatRFGrouped(creatorRfBalanceUnits)}`
       );
       return;
     }
@@ -555,7 +634,13 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       setPrizes(finalPrizes);
 
       if (isFixed) {
-        const { machine, seededRfEscrowUnits, seededFriends, events } = createFixedOddsMachine({
+        const {
+          machine,
+          seededUsdgEscrowUnits,
+          seededRfEscrowUnits,
+          seededFriends,
+          events,
+        } = createFixedOddsMachine({
           name,
           shellId,
           creatorAddress: wallet || creatorAddress,
@@ -564,11 +649,23 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
           prizeEntries: finalPrizes,
         });
         soundFx.playJackpot();
-        onPublishMachine(machine, seededRfEscrowUnits, seededFriends, events);
+        onPublishMachine(
+          machine,
+          seededUsdgEscrowUnits,
+          seededRfEscrowUnits,
+          seededFriends,
+          events
+        );
         return;
       }
 
-      const { machine, seededRfEscrowUnits, seededFriends, events } = createMachine({
+      const {
+        machine,
+        seededUsdgEscrowUnits,
+        seededRfEscrowUnits,
+        seededFriends,
+        events,
+      } = createMachine({
         name,
         shellId,
         creatorAddress: wallet || creatorAddress,
@@ -579,7 +676,13 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       });
 
       soundFx.playJackpot();
-      onPublishMachine(machine, seededRfEscrowUnits, seededFriends, events);
+      onPublishMachine(
+        machine,
+        seededUsdgEscrowUnits,
+        seededRfEscrowUnits,
+        seededFriends,
+        events
+      );
     } catch (err) {
       setErrorMsg((err as Error).message);
     } finally {
@@ -596,16 +699,6 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
     const hasRealNfts = prizes.some((p) => p.type === 'FRIEND_PRIZE' && p.origin === 'real-nft');
     if (!hasRealNfts) return { prizes };
     if (!connected) return { error: 'Connect a wallet first — NFT funding requires verified ownership.' };
-    let rfUsd: string | null = null;
-    try {
-      const rf = await getRareFriendsUsdPrice();
-      rfUsd = rf?.usdPrice ?? null;
-    } catch {
-      rfUsd = null;
-    }
-    if (!rfUsd) {
-      return { error: '$RF PRICE UNAVAILABLE — cannot convert top bids. Refresh market data and retry.' };
-    }
     const refreshed: PrizeEntry[] = [];
     for (const p of prizes) {
       if (p.type !== 'FRIEND_PRIZE' || p.origin !== 'real-nft') {
@@ -623,7 +716,13 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       if ((keyNum && reservedNftKeys.has(keyNum)) || reservedNftKeys.has(keySlug)) {
         return { error: `"${p.name}" is already funded into another LIVE local machine. Remove it to continue.` };
       }
-      // 1. Ownership re-verification (generic: onchain for Rare Friends, OpenSea re-query otherwise).
+      // 1. Chain gate: Robinhood only, enforced before anything else.
+      if (!isFundableChain(chainSlug)) {
+        return {
+          error: `"${p.name}" is on ${chainSlug}. Rare Arcade funds Robinhood Chain NFTs only — remove it from the prize pool.`,
+        };
+      }
+      // 2. Ownership re-verification via a fresh on-chain ownerOf read.
       try {
         const { owner } = await verifyNftOwnerGeneric({
           chain: chainSlug,
@@ -638,7 +737,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       } catch {
         return { error: `OWNERSHIP COULD NOT BE VERIFIED for "${p.name}". Refresh inventory and retry.` };
       }
-      // 2. Market refresh: generation bid → collection top bid → RF conversion.
+      // 3. Market refresh: generation bid → collection top bid → USDG peg.
       // Collection-level bids keep publish fast (no per-item requests).
       const collectionSlug = p.collectionSlug ?? '';
       let bidUsd: string | null = null;
@@ -692,7 +791,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
           error: `"${p.name}" currently has no OpenSea top bid, so Rare Arcade cannot use it in RTP calculations yet. Remove it to publish.`,
         };
       }
-      const ref = convertUsdToRfUnits(bidUsd, rfUsd);
+      const ref = convertUsdToUsdgUnits(bidUsd);
       if (ref === null || ref <= 0n) {
         return {
           error: `"${p.name}" currently has no OpenSea top bid, so Rare Arcade cannot use it in RTP calculations yet. Remove it to publish.`,
@@ -704,7 +803,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
       }
       refreshed.push({
         ...p,
-        referenceValueUnits: ref,
+        usdgValueUnits: ref,
         valuationSnapshot: {
           method,
           source: 'opensea',
@@ -714,8 +813,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
           topBidUsd: bidUsd,
           bidNative,
           bidCurrency,
-          rfUsd,
-          referenceRf: ref.toString(),
+          referenceUsdg: formatUsdg(ref, { decimals: 6, trimZeros: true }),
           valuedAt,
           fallbackUsed,
         },
@@ -737,7 +835,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
         )
         .map((p) => ({
           prizeEntryId: p.id,
-          unitRefUnits: p.type === 'RF_PRIZE' ? p.amountUnits : p.referenceValueUnits,
+          unitRefUnits: p.type === 'RF_PRIZE' ? p.amountUnits : p.usdgValueUnits,
         }));
       const { suggestions, achievedRtpBps, capped } = suggestFixedOddsPpm(
         targetBps,
@@ -1126,94 +1224,251 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
               marginBottom: '20px',
             }}
           >
-            {/* Add RF Rewards */}
+            {/* Add rewards in EITHER currency — USDG or $RAREFRIENDS, or both.
+                One tray because the form is identical; the currency toggle is
+                always visible so neither option is hidden behind the other. */}
             <div className="workshop-tray">
               <div className="workshop-tray-label">
                 <PixelIcon name="rf" size={12} color="#ffffff" />
-                ADD RF REWARDS
+                ADD USDG OR RF REWARDS
               </div>
               <div className="workshop-tray-body">
 
-              <div style={{ fontSize: '9px', color: '#666', marginBottom: '6px', fontFamily: 'var(--font-lcd)' }}>
-                QUICK-PICK CARTRIDGE:
+              <div
+                style={{
+                  fontSize: '9px',
+                  color: '#444',
+                  marginBottom: '6px',
+                  fontFamily: 'var(--font-lcd)',
+                  lineHeight: 1.5,
+                }}
+              >
+                PICK A REWARD CURRENCY — LOAD EITHER OR BOTH:
               </div>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                {RARE_ARCADE_DEMO_ECONOMY.rfPrizeSuggestions.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    className={`pixel-btn pixel-btn-sm ${rfPrizeAmountStr === s ? 'pixel-btn-primary' : ''}`}
-                    onClick={() => setRfPrizeAmountStr(s)}
-                  >
-                    {Number(s).toLocaleString('en-US')}
-                  </button>
-                ))}
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  className={`pixel-btn pixel-btn-sm ${rewardCurrency === 'USDG' ? 'pixel-btn-primary' : ''}`}
+                  style={{ flex: 1 }}
+                  onClick={() => setRewardCurrency('USDG')}
+                  title="USDG rewards — the stable play currency, credited straight back to the player's USDG balance"
+                >
+                  USDG REWARDS
+                </button>
+                <button
+                  type="button"
+                  className={`pixel-btn pixel-btn-sm ${rewardCurrency === 'RF' ? 'pixel-btn-primary' : ''}`}
+                  style={{ flex: 1 }}
+                  onClick={() => setRewardCurrency('RF')}
+                  title="$RAREFRIENDS rewards — credited in RF, valued in USDG once at seed time so published RTP cannot drift"
+                >
+                  $RAREFRIENDS REWARDS
+                </button>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '8px', marginBottom: '10px' }}>
-                <div>
-                  <label style={{ fontSize: '9px', color: '#666' }}>AMOUNT (RF)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={rfPrizeAmountStr}
-                    onChange={(e) => setRfPrizeAmountStr(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: '6px',
-                      border: '2px solid var(--color-black)',
-                      fontSize: '12px',
-                    }}
-                  />
-                </div>
-                <div>
-                  <label style={{ fontSize: '9px', color: '#666' }}>QTY</label>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <button
-                      type="button"
-                      className="pixel-btn pixel-btn-sm"
-                      style={{ padding: '6px 8px' }}
-                      onClick={() => setRfPrizeQty((q) => Math.max(1, q - 1))}
-                      title="Decrease quantity"
-                      aria-label="Decrease prize quantity"
-                    >
-                      <PixelIcon name="minus" size={10} />
-                    </button>
-                    <input
-                      type="number"
-                      min="1"
-                      max="100"
-                      value={rfPrizeQty}
-                      onChange={(e) => setRfPrizeQty(Number(e.target.value))}
-                      style={{
-                        width: '100%',
-                        padding: '6px',
-                        border: '2px solid var(--color-black)',
-                        fontSize: '12px',
-                        textAlign: 'center',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="pixel-btn pixel-btn-sm"
-                      style={{ padding: '6px 8px' }}
-                      onClick={() => setRfPrizeQty((q) => Math.min(100, q + 1))}
-                      title="Increase quantity"
-                      aria-label="Increase prize quantity"
-                    >
-                      <PixelIcon name="plus" size={10} />
-                    </button>
+              {rewardCurrency === 'USDG' ? (
+                <>
+                  <div style={{ fontSize: '9px', color: '#666', marginBottom: '6px', fontFamily: 'var(--font-lcd)' }}>
+                    QUICK-PICK CARTRIDGE:
                   </div>
-                </div>
-              </div>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                    {RARE_ARCADE_DEMO_ECONOMY.usdgPrizeSuggestions.map((sug) => (
+                      <button
+                        key={sug}
+                        type="button"
+                        className={`pixel-btn pixel-btn-sm ${usdgRewardAmountStr === sug ? 'pixel-btn-primary' : ''}`}
+                        onClick={() => setUsdgPrizeAmountStr(sug)}
+                      >
+                        {formatUsdg(parseUsdg(sug), { showSymbol: true })}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '8px', marginBottom: '10px' }}>
+                    <div>
+                      <label style={{ fontSize: '9px', color: '#666' }}>AMOUNT (USDG)</label>
+                      <input
+                        type="number"
+                        min="0.000001"
+                        step="0.01"
+                        value={usdgRewardAmountStr}
+                        onChange={(e) => setUsdgPrizeAmountStr(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '6px',
+                          border: '2px solid var(--color-black)',
+                          fontSize: '12px',
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '9px', color: '#666' }}>QTY</label>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-sm"
+                          style={{ padding: '6px 8px' }}
+                          onClick={() => setUsdgPrizeQty((q) => Math.max(1, q - 1))}
+                          title="Decrease quantity"
+                          aria-label="Decrease prize quantity"
+                        >
+                          <PixelIcon name="minus" size={10} />
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={usdgRewardQty}
+                          onChange={(e) => setUsdgPrizeQty(Number(e.target.value))}
+                          style={{
+                            width: '100%',
+                            padding: '6px',
+                            border: '2px solid var(--color-black)',
+                            fontSize: '12px',
+                            textAlign: 'center',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-sm"
+                          style={{ padding: '6px 8px' }}
+                          onClick={() => setUsdgPrizeQty((q) => Math.min(100, q + 1))}
+                          title="Increase quantity"
+                          aria-label="Increase prize quantity"
+                        >
+                          <PixelIcon name="plus" size={10} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: '9px', color: '#666', marginBottom: '6px', fontFamily: 'var(--font-lcd)' }}>
+                    QUICK-PICK CARTRIDGE:
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                    {RARE_ARCADE_DEMO_ECONOMY.rfPrizeSuggestions.map((sug) => (
+                      <button
+                        key={sug}
+                        type="button"
+                        className={`pixel-btn pixel-btn-sm ${rfPrizeAmountStr === sug ? 'pixel-btn-primary' : ''}`}
+                        onClick={() => setRfPrizeAmountStr(sug)}
+                      >
+                        {Number(sug).toLocaleString('en-US')}
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '9px',
+                      color: '#555',
+                      marginBottom: '10px',
+                      fontFamily: 'var(--font-lcd)',
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    RF VALUE LOCKS AT{' '}
+                    <strong>
+                      {formatUsdg(rfToUsdgUnits(parseRF(rfPrizeAmountStr || '0'), rfQuote.usdgPerRf), {
+                        showSymbol: true,
+                      })}
+                    </strong>{' '}
+                    PER REWARD @ ${rfQuote.usdgPerRf}/RF
+                    <div
+                      style={{
+                        color:
+                          rfQuote.source === 'live'
+                            ? '#0a7a0a'
+                            : rfQuote.source === 'stale'
+                              ? '#b26a00'
+                              : '#c00',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      {describeRfQuote(rfQuote)}
+                      {rfQuote.source !== 'live' && (
+                        <>
+                          {' '}
+                          <button
+                            type="button"
+                            className="pixel-btn pixel-btn-sm"
+                            style={{ padding: '1px 4px', marginLeft: '4px' }}
+                            onClick={rfPrice.refresh}
+                          >
+                            RETRY
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.3fr', gap: '8px', marginBottom: '10px' }}>
+                    <div>
+                      <label style={{ fontSize: '9px', color: '#666' }}>AMOUNT (RF)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={rfPrizeAmountStr}
+                        onChange={(e) => setRfPrizeAmountStr(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '6px',
+                          border: '2px solid var(--color-black)',
+                          fontSize: '12px',
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '9px', color: '#666' }}>QTY</label>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-sm"
+                          style={{ padding: '6px 8px' }}
+                          onClick={() => setRfPrizeQty((q) => Math.max(1, q - 1))}
+                          title="Decrease quantity"
+                          aria-label="Decrease prize quantity"
+                        >
+                          <PixelIcon name="minus" size={10} />
+                        </button>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={rfPrizeQty}
+                          onChange={(e) => setRfPrizeQty(Number(e.target.value))}
+                          style={{
+                            width: '100%',
+                            padding: '6px',
+                            border: '2px solid var(--color-black)',
+                            fontSize: '12px',
+                            textAlign: 'center',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="pixel-btn pixel-btn-sm"
+                          style={{ padding: '6px 8px' }}
+                          onClick={() => setRfPrizeQty((q) => Math.min(100, q + 1))}
+                          title="Increase quantity"
+                          aria-label="Increase prize quantity"
+                        >
+                          <PixelIcon name="plus" size={10} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <button
                 type="button"
                 className="pixel-btn pixel-btn-sm pixel-btn-primary"
                 style={{ width: '100%' }}
-                onClick={handleAddRfPrize}
+                onClick={handleAddReward}
               >
-                + ADD RF PRIZE
+                + ADD {rewardCurrency === 'USDG' ? 'USDG' : 'RF'} REWARDS
               </button>
               {isFixed && (
                 <div style={{ marginTop: '10px' }}>
@@ -1402,9 +1657,41 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                         </strong>
                         <span style={{ fontSize: '10px', color: '#666', marginLeft: '8px' }}>
                           {p.type === 'FRIEND_PRIZE'
-                            ? `(Ref: ${formatRFGrouped(p.referenceValueUnits)})`
+                            ? `(Ref: ${formatRFGrouped(p.usdgValueUnits)})`
                             : `× ${p.initialQuantity} tickets`}
                         </span>
+                        {p.type === 'RF_PRIZE' && (
+                          <div
+                            style={{
+                              fontSize: '9px',
+                              marginTop: '4px',
+                              fontFamily: 'var(--font-lcd)',
+                              color:
+                                p.rfPriceSource === 'live'
+                                  ? '#0a7a0a'
+                                  : p.rfPriceSource === 'stale'
+                                    ? '#b26a00'
+                                    : p.rfPriceSource === 'fallback'
+                                      ? '#c00'
+                                      : '#666',
+                            }}
+                          >
+                            LOCKED @ ${p.rfPriceUsdg ?? '?'}/RF ={' '}
+                            {formatUsdgGrouped(p.usdgValueUnits)} VALUE
+                            {p.rfPriceSource === 'fallback' && (
+                              <>
+                                {' '}
+                                • FALLBACK RATE — RTP MAY BE WRONG
+                              </>
+                            )}
+                            {p.rfPriceSource === 'stale' && (
+                              <>
+                                {' '}
+                                • STALE RATE — RF PRICE NOT REFRESHING
+                              </>
+                            )}
+                          </div>
+                        )}
                         {p.type === 'FRIEND_PRIZE' && (
                           <div style={{ fontSize: '9px', color: '#555', marginTop: '4px', fontFamily: 'var(--font-lcd)' }}>
                             {p.valuationSnapshot ? (
@@ -1416,11 +1703,10 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                                     : p.collectionType === 'GENESIS'
                                       ? `GENESIS TOP BID ${formatUsdAdaptive(p.valuationSnapshot.topBidUsd)}`
                                       : `TOP BID ${formatUsdAdaptive(p.valuationSnapshot.topBidUsd)}`}
-                                {' '}• $RF {formatUsdAdaptive(p.valuationSnapshot.rfUsd)}
-                                {' '}• {formatRfReferenceCompact(p.referenceValueUnits)}
+                                {' '}• {formatUsdgReferenceCompact(p.usdgValueUnits)}
                               </>
                             ) : (
-                              <>LEGACY MANUAL REFERENCE • {formatRFGrouped(p.referenceValueUnits)}</>
+                              <>LEGACY MANUAL REFERENCE • {formatUsdgGrouped(p.usdgValueUnits)}</>
                             )}
                           </div>
                         )}
@@ -1571,26 +1857,33 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
             }}
           >
             <div className="workshop-lcd-tile">
-              <div className="workshop-lcd-caption">REQUIRED RF ESCROW:</div>
+              <div className="workshop-lcd-caption">USDG ESCROW REQUIRED:</div>
+              <div className="workshop-lcd-value">{formatUsdgGrouped(usdgEscrowRequiredUnits)}</div>
+            </div>
+            <div className="workshop-lcd-tile">
+              <div className="workshop-lcd-caption">RF ESCROW REQUIRED:</div>
               <div className="workshop-lcd-value">{formatRFGrouped(rfEscrowRequiredUnits)}</div>
             </div>
             <div className="workshop-lcd-tile">
-              <div className="workshop-lcd-caption">YOUR BALANCE:</div>
-              <div className="workshop-lcd-value">{formatRFGrouped(creatorRfBalanceUnits)}</div>
+              <div className="workshop-lcd-caption">YOUR USDG / RF:</div>
+              <div className="workshop-lcd-value" style={{ fontSize: '11px' }}>
+                {formatUsdgGrouped(creatorUsdgBalanceUnits)}
+                <br />
+                {formatRFGrouped(creatorRfBalanceUnits)}
+              </div>
             </div>
             <div
               className="workshop-lcd-tile"
-              style={
-                hasEnoughRf
-                  ? undefined
-                  : { background: '#000', color: '#fff' }
-              }
+              style={hasEnoughFunds ? undefined : { background: '#000', color: '#fff' }}
             >
-              <div className="workshop-lcd-caption" style={hasEnoughRf ? undefined : { color: '#ccc' }}>
+              <div
+                className="workshop-lcd-caption"
+                style={hasEnoughFunds ? undefined : { color: '#ccc' }}
+              >
                 ESCROW STATUS:
               </div>
               <div className="workshop-lcd-value">
-                {hasEnoughRf ? '◼ FUNDED' : '◻ SHORTFALL'}
+                {hasEnoughFunds ? '◼ FUNDED' : '◻ SHORTFALL'}
               </div>
             </div>
           </div>
@@ -1842,7 +2135,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                 }}
               >
                 <div className="workshop-lcd-tile">
-                  <div className="workshop-lcd-caption">PLATFORM BURN</div>
+                  <div className="workshop-lcd-caption">PLATFORM FEE (5%)</div>
                   <div className="workshop-lcd-value">5.0% FIXED</div>
                 </div>
 
@@ -1876,7 +2169,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                 </div>
 
                 <div className="workshop-lcd-tile" style={{ gridColumn: '1 / -1' }}>
-                  <div className="workshop-lcd-caption">BURN AT SELLOUT</div>
+                  <div className="workshop-lcd-caption">FEE AT SELLOUT</div>
                   <div className="workshop-lcd-value">
                     {formatRFGrouped(((pullPriceUnits * BigInt(totalPulls)) * 500n) / 10000n)}
                   </div>
@@ -1887,7 +2180,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                 <div style={{ marginTop: '8px', padding: '8px', background: '#000', color: '#fff', fontSize: '10px' }}>
                   <strong>PLAYER-FAVORABLE ECONOMICS</strong>
                   <br />
-                  This machine's modeled prize value exceeds the creator's post-burn
+                  This machine's modeled prize value exceeds the creator's post-fee
                   pull receipts.
                 </div>
               )}
@@ -1928,7 +2221,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                   <th>SCENARIO</th>
                   <th>PULLS</th>
                   <th>RF VOLUME</th>
-                  <th>RF BURNED (5%)</th>
+                  <th>PLATFORM FEE (5%)</th>
                   <th>OPERATOR RECEIPTS (95%)</th>
                 </tr>
               </thead>
@@ -1937,10 +2230,17 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                   <tr key={sc.percentLabel}>
                     <td style={{ fontWeight: 'bold' }}>{sc.percentLabel}</td>
                     <td>{sc.pulls} pulls</td>
-                    <td>{formatRFGrouped(sc.grossVolumeUnits)}</td>
-                    <td>{formatRFGrouped(sc.burnUnits)}</td>
+                    <td>{formatUsdgGrouped(sc.grossVolumeUnits)}</td>
+                    <td>
+                      {formatUsdgGrouped(sc.platformFeeUnits)}
+                      <div style={{ fontSize: '8px', color: '#555' }}>
+                        75% {formatUsdgGrouped(sc.primaryFeeUnits, { decimals: 4 })} treasury
+                        {' • '}25% {formatUsdgGrouped(sc.buybackFeeUnits, { decimals: 4 })} → RF
+                        buyback
+                      </div>
+                    </td>
                     <td style={{ fontWeight: 'bold' }}>
-                      {formatRFGrouped(sc.creatorReceiptsUnits)}
+                      {formatUsdgGrouped(sc.creatorReceiptsUnits)}
                     </td>
                   </tr>
                 ))}
@@ -1997,9 +2297,9 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                       const snap = p.valuationSnapshot;
                       return (
                         <span key={p.id} style={{ display: 'block', marginTop: '4px' }}>
-                          {p.name}: NFT reference {formatRFGrouped(p.referenceValueUnits)}
+                          {p.name}: NFT reference {formatUsdgGrouped(p.usdgValueUnits)}
                           {snap
-                            ? ` • $RF ${formatUsdAdaptive(snap.rfUsd)} • top bid ${formatUsdAdaptive(snap.topBidUsd)} • updated ${
+                            ? ` • top bid ${formatUsdAdaptive(snap.topBidUsd)} • updated ${
                                 snap.valuedAt ? new Date(snap.valuedAt).toLocaleTimeString() : '—'
                               }`
                             : ' • LEGACY MANUAL REFERENCE (locked at creation)'}
@@ -2080,7 +2380,6 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
               <NftPicker
                 fetchState={fetchState}
                 groups={priced.groups}
-                rfUsd={priced.rfUsd}
                 refreshedAt={priced.refreshedAt}
                 pricingComplete={priced.pricingComplete}
                 selectedKeys={selectedKeys}
@@ -2103,7 +2402,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                       const key = nftPickerKey(a);
                       const verified = verifiedKeys.has(key);
                       const ap = a.pricing;
-                      const ref = ap?.referenceRfUnits;
+                      const ref = ap?.usdgValueUnits;
                       return (
                         <div
                           key={key}
@@ -2131,9 +2430,7 @@ export const CreatorWorkshop: React.FC<CreatorWorkshopProps> = ({
                             </div>
                             <div style={{ fontSize: '10px', fontFamily: 'var(--font-lcd)' }}>
                               {ap?.state === 'priced' && ref !== undefined ? (
-                                <>TOP-BID REF <strong>{formatRfReferenceCompact(ref)}</strong> ({formatRFGrouped(ref)})</>
-                              ) : ap?.state === 'rf_unavailable' ? (
-                                <>$RF PRICE UNAVAILABLE</>
+                                <>TOP-BID REF <strong>{formatUsdgGrouped(ref)}</strong></>
                               ) : (
                                 <>NO BIDS YET — BLOCKS PUBLISH</>
                               )}
@@ -2487,7 +2784,7 @@ function FixedSummarySection(props: {
         prizeEntryId: e.id,
         oddsPpm: e.oddsPpm ?? 0,
         quantity: e.initialQuantity,
-        referenceValueUnits: e.type === 'RF_PRIZE' ? e.amountUnits : e.referenceValueUnits,
+        usdgValueUnits: e.type === 'RF_PRIZE' ? e.amountUnits : e.usdgValueUnits,
       }));
     if (lines.length === 0 || pullPriceUnits <= 0n) return null;
     try {
@@ -2518,7 +2815,7 @@ function FixedSummarySection(props: {
           }}
         >
           <div className="workshop-lcd-tile">
-            <div className="workshop-lcd-caption">PLATFORM BURN</div>
+            <div className="workshop-lcd-caption">PLATFORM FEE (5%)</div>
             <div className="workshop-lcd-value">5.0% FIXED</div>
           </div>
           <div className="workshop-lcd-tile">
@@ -2554,7 +2851,7 @@ function FixedSummarySection(props: {
           <div style={{ marginTop: '8px', padding: '8px', background: '#000', color: '#fff', fontSize: '10px' }}>
             <strong>PLAYER-FAVORABLE ECONOMICS</strong>
             <br />
-            This machine&apos;s modeled prize value exceeds the creator&apos;s post-burn
+            This machine&apos;s modeled prize value exceeds the creator&apos;s post-fee
             pull receipts.
           </div>
         )}

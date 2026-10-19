@@ -42,7 +42,7 @@ export interface RtpWarning {
 
 /**
  * Classify RTP for warning display. Never blocks — transparency only.
- * operatorMargin = 9500 - rtpBps (5% burn is fixed).
+ * operatorMargin = 9500 - rtpBps (the 5% platform fee is fixed).
  */
 export function classifyRtp(actualRtpBps: number): RtpWarning {
   const operatorMarginBps = 9500 - actualRtpBps;

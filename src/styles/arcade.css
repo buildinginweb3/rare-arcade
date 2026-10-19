@@ -509,29 +509,31 @@ h1, h2, h3, .pixel-title {
    both removed; PixelShine remains for NFT reveals and the SVG pull
    stages only. */
 
-/* Burn fragments: small $RF breaks into 4-8 square pixels then disappears. */
-.burn-fragments {
+/* Fee routing: the 5% platform fee splits in two — 75% settles at the
+   treasury, 25% travels onward to be swapped into RF and burned. */
+.fee-routes {
   display: inline-flex;
-  gap: 2px;
+  gap: 3px;
   align-items: center;
 }
 
-.burn-frag {
-  width: 4px;
+.fee-route {
   height: 4px;
   background: var(--color-black);
   display: inline-block;
 }
 
-@keyframes burn-frag-fade {
-  0%, 60% { opacity: 1; }
-  100% { opacity: 0; transform: translateY(4px); }
+.fee-route-treasury { width: 9px; }
+.fee-route-buyback { width: 3px; }
+
+@keyframes fee-route-slide {
+  0% { opacity: 0.25; }
+  50% { opacity: 1; }
+  100% { opacity: 0.25; }
 }
 
-.burn-frag-1 { animation: burn-frag-fade 1.2s steps(3) infinite; }
-.burn-frag-2 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.15s; }
-.burn-frag-3 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.3s; }
-.burn-frag-4 { animation: burn-frag-fade 1.2s steps(3) infinite; animation-delay: 0.45s; }
+.fee-route-treasury { animation: fee-route-slide 1.2s steps(3) infinite; }
+.fee-route-buyback { animation: fee-route-slide 1.2s steps(3) infinite; animation-delay: 0.3s; }
 
 /* ==========================================================================
    NAVIGATION & HEADER

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { PullResult } from '../../domain/types.ts';
 import { formatRFGrouped } from '../../domain/rf.ts';
+import { formatUsdgGrouped } from '../../domain/usdg.ts';
 import { RfTokenIcon } from '../ui/RfTokenIcon.tsx';
 import { PixelIcon } from '../ui/PixelIcon.tsx';
 import { FriendPrizeVisual, nftIdentityLine } from '../../nfts/FriendPrizeVisual.tsx';
@@ -191,6 +192,36 @@ export const PrizeReveal: React.FC<PrizeRevealProps> = ({ result, shellId, __tes
           }}
         >
           SIMULATED WIN • NO NFT HAS BEEN TRANSFERRED
+        </div>
+      </div>
+    );
+  }
+
+  if (result.prizeType === 'USDG_PRIZE') {
+    const announce = `Prize: ${formatUsdgGrouped(result.usdgWonUnits)}`;
+    return (
+      <div className="anim-prize-rise" role="status" aria-live="polite" aria-label={announce} style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: '10px', fontFamily: 'var(--font-display)', marginBottom: '4px' }}>
+          YOU PULLED
+        </div>
+        <div className="rf-reveal-rise" style={{ margin: '8px 0', display: 'flex', justifyContent: 'center' }}>
+          <RfTokenIcon size={128} />
+        </div>
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: '14px' }}>
+          +{formatUsdgGrouped(result.usdgWonUnits)}
+        </div>
+        <div
+          style={{
+            marginTop: '6px',
+            display: 'inline-block',
+            background: 'var(--color-black)',
+            color: 'var(--color-white)',
+            fontSize: '8px',
+            fontFamily: 'var(--font-lcd)',
+            padding: '2px 6px',
+          }}
+        >
+          USDG REWARD
         </div>
       </div>
     );

@@ -1,25 +1,30 @@
 /**
- * Precise NFT→RF valuation math.
+ * Precise NFT→USDG valuation math.
  *
- * referenceRf = topBidUsd / rfUsd
+ * usdgValueUnits = topBidUsd
  *
- * No binary floating point in the authoritative path: USD strings are scaled
- * to integer microunits (1e9) and the division rounds to the nearest 0.001 RF
- * (1 internal unit, matching RF_SCALE = 1000).
+ * USDG (Global Dollar, Paxos) is redeemable 1:1 for US dollars, so an NFT's
+ * USD top bid IS its USDG value. There is no price feed, no division, and no
+ * rounding error — which is exactly why this replaced the old
+ * topBidUsd / rfUsd conversion: RF is volatile, so dividing by an RF price
+ * made a locked valuation drift whenever RF moved.
+ *
+ * No binary floating point in the authoritative path: the USD decimal string
+ * is scaled to integer USDG units (1e6, matching USDG's on-chain decimals).
  */
 
-import { RF_SCALE } from '../domain/rf.ts';
+import { USDG_SCALE } from '../domain/usdg.ts';
 
-const USD_SCALE = 1_000_000_000n; // 1e9 microunits for USD strings
+const USD_SCALE = USDG_SCALE; // 1 USD == 1 USDG == 1_000_000 internal units
 
-/** Parse a decimal USD string into scaled integer microunits. Returns null if invalid. */
+/** Parse a decimal USD string into USDG internal units. Returns null if invalid. */
 export function parseUsdToScaled(usd: string | number | null | undefined): bigint | null {
   if (usd === null || usd === undefined) return null;
   const str = String(usd).trim();
   if (!str || !/^\d+(\.\d+)?$/.test(str)) return null;
   const [intPartOpt, fracRaw = ''] = str.split('.');
   const intPart = intPartOpt ?? '';
-  const frac = (fracRaw + '000000000').slice(0, 9);
+  const frac = (fracRaw + '000000').slice(0, 6);
   try {
     return BigInt(intPart === '' ? '0' : intPart) * USD_SCALE + BigInt(frac);
   } catch {
@@ -28,20 +33,17 @@ export function parseUsdToScaled(usd: string | number | null | undefined): bigin
 }
 
 /**
- * Convert top-bid USD → RF reference (internal units, 1 RF = 1000).
- * Rounds to nearest 0.001 RF. Returns null when inputs are invalid/non-positive.
+ * Convert an NFT top bid in USD into USDG internal units, 1:1.
+ * Returns null when the bid is missing, unparseable, or non-positive — a
+ * zero-value NFT must block publishing rather than silently skew RTP.
  */
-export function convertUsdToRfUnits(
-  topBidUsd: string | number | null | undefined,
-  rfUsd: string | number | null | undefined
+export function convertUsdToUsdgUnits(
+  topBidUsd: string | number | null | undefined
 ): bigint | null {
   const bidScaled = parseUsdToScaled(topBidUsd);
-  const rfScaled = parseUsdToScaled(rfUsd);
-  if (bidScaled === null || rfScaled === null) return null;
-  if (bidScaled <= 0n || rfScaled <= 0n) return null;
-  // refUnits = bid / rf * 1000, rounded: (bid*1000*2 + rf) / (2*rf)... simpler:
-  // (bidScaled * RF_SCALE + rfScaled/2) / rfScaled
-  return (bidScaled * RF_SCALE + rfScaled / 2n) / rfScaled;
+  if (bidScaled === null) return null;
+  if (bidScaled <= 0n) return null;
+  return bidScaled;
 }
 
 /** True when a bid number from OpenSea is usable for valuation. */
@@ -52,9 +54,6 @@ export function isUsableBidValue(value: unknown): value is number {
     value > 0
   );
 }
-
-/** @deprecated Use isUsableBidValue. */
-export const isUsableFloorValue = isUsableBidValue;
 
 /** Format a USD value with adaptive precision (never "$0.00" when nonzero). */
 export function formatUsdAdaptive(usd: string | number | null | undefined): string {
@@ -76,19 +75,17 @@ export function formatUsdAdaptive(usd: string | number | null | undefined): stri
   return '$' + n.toFixed(decimals);
 }
 
-/** Compact RF reference display (exact value stays in details/economics). */
-export function formatRfReferenceCompact(units: bigint): string {
-  const rf = Number(units) / 1000;
-  if (!Number.isFinite(rf)) return '—';
-  if (rf >= 1_000_000) {
-    const v = rf / 1_000_000;
-    return `≈ ${trimNum(v)}M RF`;
+/** Compact USDG reference display (exact value stays in details/economics). */
+export function formatUsdgReferenceCompact(units: bigint): string {
+  const usdg = Number(units) / Number(USD_SCALE);
+  if (!Number.isFinite(usdg)) return '—';
+  if (usdg >= 1_000_000) {
+    return `≈ ${trimNum(usdg / 1_000_000)}M USDG`;
   }
-  if (rf >= 10_000) {
-    const v = rf / 1000;
-    return `≈ ${trimNum(v)}K RF`;
+  if (usdg >= 10_000) {
+    return `≈ ${trimNum(usdg / 1000)}K USDG`;
   }
-  return `≈ ${Math.round(rf).toLocaleString('en-US')} RF`;
+  return `≈ ${formatUsdAdaptive(usdg)}`;
 }
 
 function trimNum(v: number): string {

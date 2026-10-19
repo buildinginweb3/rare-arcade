@@ -87,9 +87,9 @@ class RetroAudioEngine {
   }
 
   /**
-   * 5% RF Burn pixel sizzle (filtered noise / decaying frequency).
+   * 5% platform-fee routing chime (filtered noise / decaying frequency).
    */
-  public playBurn() {
+  public playPlatformFee() {
     const ctx = this.getContext();
     if (!ctx) return;
 

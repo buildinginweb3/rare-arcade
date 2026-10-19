@@ -256,7 +256,7 @@ export function normalizeGenericNft(
   };
 }
 
-/** Normalize a full multi-chain page into generic assets (dedupe by chain:contract:id). */
+/** Normalize a Robinhood Chain page into generic assets (dedupe by contract:id). */
 export function normalizeGenericPage(
   rawNfts: unknown,
   chainSlug: string,
@@ -324,7 +324,7 @@ export function detectGenerationTraitType(categories: Record<string, string>): s
 import type { CollectionGroup } from './types.ts';
 
 function pricingRef(a: NftAsset): bigint | null {
-  const u = a.pricing?.referenceRfUnits;
+  const u = a.pricing?.usdgValueUnits;
   return typeof u === 'bigint' ? u : null;
 }
 
@@ -353,7 +353,7 @@ export function groupAndSortCollections(assets: NftAsset[]): CollectionGroup[] {
   for (const list of byKey.values()) {
     const first = list[0]!;
     const pricedRefs = list
-      .map((a) => a.pricing?.referenceRfUnits)
+      .map((a) => a.pricing?.usdgValueUnits)
       .filter((u): u is bigint => typeof u === 'bigint');
     // Collection top-bid USD: prefer max asset bid, else null.
     let topBidUsd: string | undefined;
@@ -453,7 +453,6 @@ export function bidBadgeLabel(a: NftAsset): string {
   const p = a.pricing;
   if (!p || p.state === 'loading') return 'PRICING…';
   if (p.state === 'unpriced') return 'NO BIDS';
-  if (p.state === 'rf_unavailable') return '$RF UNAVAILABLE';
   if (p.method === 'rare_friends_generation_bid' && p.traitValue !== undefined) {
     return `GEN ${p.traitValue} TOP BID`;
   }

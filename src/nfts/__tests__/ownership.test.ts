@@ -12,7 +12,7 @@ import {
 } from '../ownership.ts';
 import { MOCK_ASSETS, MOCK_GENERATIONS_ASSET } from '../mockAssets.ts';
 import { createMachine } from '../../domain/machine.ts';
-import { parseRF } from '../../domain/rf.ts';
+import { parseUsdg } from '../../domain/usdg.ts';
 import { createSeedableRng } from '../../domain/deck.ts';
 import type { PrizeEntry } from '../../domain/types.ts';
 
@@ -32,21 +32,21 @@ function machineWithNft(status: 'READY' | 'LIVE' | 'SOLD_OUT' | 'CANCELLED' = 'L
       name: 'Friend #8283',
       familyName: 'Rare Friends Generations',
       generation: 0,
-      referenceValueUnits: parseRF('250000'),
+      usdgValueUnits: parseUsdg('250'),
       initialQuantity: 1,
       remainingQuantity: 1,
       origin: 'real-nft',
       chainId: 4663,
       contractAddress: MOCK_GENERATIONS_ASSET.contract,
     },
-    { id: 'p-rf', type: 'RF_PRIZE', amountUnits: parseRF('5000'), initialQuantity: 1, remainingQuantity: 1 },
+    { id: 'p-cash', type: 'USDG_PRIZE', amountUnits: parseUsdg('5'), initialQuantity: 1, remainingQuantity: 1 },
   ];
   const { machine } = createMachine({
     id: `m-${status}`,
     name: 'T',
     shellId: 'CLASSIC',
     creatorAddress: WALLET,
-    pullPriceUnits: parseRF('5000'),
+    pullPriceUnits: parseUsdg('5'),
     totalPulls: 20,
     targetRtpBps: 9000,
     prizeEntries: prizes,

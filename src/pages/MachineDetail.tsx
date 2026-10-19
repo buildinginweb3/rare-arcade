@@ -5,10 +5,24 @@ import type {
   FixedOddsMachine,
   PullResult,
   LedgerEvent,
+  RareFriendMetadata,
 } from '../domain/types.ts';
 import { isFixedOddsMachine } from '../domain/types.ts';
 import { pullMachine, cancelMachine, isMachineSoldOut } from '../domain/machine.ts';
+import {
+  canPauseMachine,
+  canResumeMachine,
+  canWithdrawEscrow,
+  computeEscrowSnapshot,
+  isEscrowEmpty,
+  pauseMachine,
+  resumeMachine,
+  withdrawEscrow,
+  type VaultEligibility,
+} from '../domain/vault.ts';
 import { formatRFGrouped, formatBps } from '../domain/rf.ts';
+import { formatUsdgGrouped } from '../domain/usdg.ts';
+import { PLATFORM_FEE_BPS, PLATFORM_FEE_RECIPIENTS } from '../domain/fees.ts';
 import { classifyRtp } from '../domain/rtp.ts';
 import { calculateRealizedPayoutRatio } from '../domain/fixedOdds.ts';
 import { CabinetView } from '../components/machine/CabinetView.tsx';
@@ -35,7 +49,23 @@ interface MachineDetailProps {
   playerBalanceUnits: bigint;
   onUpdateMachine: (updated: Machine, events: LedgerEvent[]) => void;
   onPlayerWonPrize: (result: PullResult) => void;
-  onMachineCancelled?: (cancelledMachine: Machine, refundRf: bigint, events: LedgerEvent[]) => void;
+  onMachineCancelled?: (
+    cancelledMachine: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    events: LedgerEvent[]
+  ) => void;
+  onMachinePaused?: (pausedMachine: Machine, events: LedgerEvent[]) => void;
+  onMachineResumed?: (resumedMachine: Machine, events: LedgerEvent[]) => void;
+  onEscrowWithdrawn?: (
+    withdrawnMachine: Machine,
+    refundUsdg: bigint,
+    refundRf: bigint,
+    refundFriends: RareFriendMetadata[],
+    events: LedgerEvent[]
+  ) => void;
+  /** Addresses that count as this machine's operator (creator id + wallet). */
+  operatorAddresses?: readonly string[];
   onBack: () => void;
   recentMachineEvents?: LedgerEvent[];
   reducedMotion?: boolean;
@@ -56,6 +86,10 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
   onUpdateMachine,
   onPlayerWonPrize,
   onMachineCancelled,
+  onMachinePaused,
+  onMachineResumed,
+  onEscrowWithdrawn,
+  operatorAddresses = [],
   onBack,
   recentMachineEvents = [],
   reducedMotion: reducedMotionProp,
@@ -120,7 +154,54 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
   const isFixed = isFixedOddsMachine(machine);
   const isSoldOut = isMachineSoldOut(machine);
   const isCancelled = machine.status === 'CANCELLED';
+  const isPaused = machine.status === 'PAUSED';
   const prizes = prizesRemaining(machine);
+
+  // --- Machine vault: what is still locked inside, and what the operator may do
+  const escrow = computeEscrowSnapshot(machine);
+  const escrowIsEmpty = isEscrowEmpty(escrow);
+  const pauseEligibility: VaultEligibility = canPauseMachine(machine, operatorAddresses);
+  const resumeEligibility: VaultEligibility = canResumeMachine(machine, operatorAddresses);
+  const withdrawEligibility: VaultEligibility = canWithdrawEscrow(machine, operatorAddresses);
+  const vaultIsClosed = isCancelled || isSoldOut;
+
+  const handlePause = () => {
+    try {
+      const { pausedMachine, events } = pauseMachine(machine, operatorAddresses);
+      soundFx.playClick();
+      onMachinePaused?.(pausedMachine, events);
+    } catch (err) {
+      console.error('Pause machine error:', err);
+    }
+  };
+
+  const handleResume = () => {
+    try {
+      const { resumedMachine, events } = resumeMachine(machine, operatorAddresses);
+      soundFx.playClick();
+      onMachineResumed?.(resumedMachine, events);
+    } catch (err) {
+      console.error('Resume machine error:', err);
+    }
+  };
+
+  const handleWithdraw = () => {
+    try {
+      const { withdrawnMachine, refundUsdgUnits, refundRfUnits, refundFriends, events } =
+        withdrawEscrow(machine, operatorAddresses);
+      soundFx.playClick();
+      onEscrowWithdrawn?.(
+        withdrawnMachine,
+        refundUsdgUnits,
+        refundRfUnits,
+        refundFriends,
+        events
+      );
+    } catch (err) {
+      console.error('Withdraw escrow error:', err);
+    }
+  };
+
   const selloutEstimate = useSelloutEstimate(isFixed ? machine : null, 500);
   const realized = isFixed
     ? calculateRealizedPayoutRatio(
@@ -132,17 +213,19 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
 
   let pullDisabledReason = '';
   if (!canAfford) {
-    pullDisabledReason = `Need ${formatRFGrouped(machine.pullPriceUnits)} (You have ${formatRFGrouped(playerBalanceUnits)})`;
+    pullDisabledReason = `Need ${formatUsdgGrouped(machine.pullPriceUnits)} (You have ${formatUsdgGrouped(playerBalanceUnits)})`;
   } else if (isSoldOut) {
     pullDisabledReason = 'Machine is completely sold out';
   } else if (isCancelled) {
     pullDisabledReason = 'Machine has been cancelled';
+  } else if (isPaused) {
+    pullDisabledReason = 'Machine is paused by its creator';
   }
 
   const playShellStartSounds = useCallback((shellId: Machine['shellId']) => {
     soundFx.playInsertCoin();
     const t = window.setTimeout(() => {
-      soundFx.playBurn();
+      soundFx.playPlatformFee();
       switch (shellId) {
         case 'CAPSULE':
           soundFx.playCapsuleTick();
@@ -264,9 +347,9 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
   const handleCancel = () => {
     if (machine.pullCount > 0 || machine.isRulesLocked) return;
     try {
-      const { cancelledMachine, refundRfUnits, events } = cancelMachine(machine as never);
+      const { cancelledMachine, refundUsdgUnits, refundRfUnits, events } = cancelMachine(machine);
       soundFx.playClick();
-      onMachineCancelled?.(cancelledMachine, refundRfUnits, events);
+      onMachineCancelled?.(cancelledMachine, refundUsdgUnits, refundRfUnits, events);
       setShowRules(false);
     } catch (err) {
       console.error('Cancel machine error:', err);
@@ -292,9 +375,9 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
         </button>
 
         <div style={{ fontFamily: 'var(--font-lcd)', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span>DEMO RF:</span>
+          <span>DEMO USDG:</span>
           <strong style={{ fontSize: '12px' }}>
-            {formatRFGrouped(playerBalanceUnits)}
+            {formatUsdgGrouped(playerBalanceUnits)}
           </strong>
         </div>
       </div>
@@ -338,7 +421,7 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
             onPullAnimationComplete={handleAnimationComplete}
           />
           <div className="sr-only" aria-live="polite">
-            {isPulling ? 'Pull in progress.' : lastResult ? `Prize: ${lastResult.prizeType === 'RF_PRIZE' ? formatRFGrouped(lastResult.rfWonUnits) : lastResult.prizeType === 'FRIEND_PRIZE' && lastResult.friendWon ? `${lastResult.friendWon.name} #${lastResult.friendWon.tokenId.toString()}` : 'No prize.'}` : ''}
+            {isPulling ? 'Pull in progress.' : lastResult ? `Prize: ${lastResult.prizeType === 'USDG_PRIZE' ? formatUsdgGrouped(lastResult.usdgWonUnits) : lastResult.prizeType === 'RF_PRIZE' ? formatRFGrouped(lastResult.rfWonUnits) : lastResult.prizeType === 'FRIEND_PRIZE' && lastResult.friendWon ? `${lastResult.friendWon.name} #${lastResult.friendWon.tokenId.toString()}` : 'No prize.'}` : ''}
           </div>
         </div>
 
@@ -371,13 +454,13 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
             {isFixed && classifyRtp((machine as FixedOddsMachine).configuredRtpBps).kind === 'subsidized' && (
               <div style={{ marginTop: '10px', padding: '8px 10px', background: '#000', color: '#fff', fontSize: '10px' }}>
                 <strong>CREATOR-SUBSIDIZED MACHINE</strong> — configured prize value exceeds
-                post-burn receipts.
+                post-fee receipts.
               </div>
             )}
             {!isFixed && classifyRtp((machine as FiniteDeckMachine).currentRtpBps).kind === 'subsidized' && (
               <div style={{ marginTop: '10px', padding: '8px 10px', background: '#000', color: '#fff', fontSize: '10px' }}>
                 <strong>CREATOR-SUBSIDIZED MACHINE</strong> — modeled prize value exceeds
-                post-burn receipts.
+                post-fee receipts.
               </div>
             )}
 
@@ -398,13 +481,25 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
               <div>
                 <div style={{ color: '#666' }}>TOTAL SPENT</div>
                 <div style={{ fontWeight: 'bold', marginTop: '2px' }}>
-                  {formatRFGrouped(machine.totalSpentUnits)}
+                  {formatUsdgGrouped(machine.totalSpentUnits)}
                 </div>
               </div>
               <div>
-                <div style={{ color: '#666' }}>TOTAL BURNED</div>
+                <div style={{ color: '#666' }}>TOTAL PLATFORM FEE</div>
                 <div style={{ fontWeight: 'bold', marginTop: '2px' }}>
-                  {formatRFGrouped(machine.totalBurnedUnits)}
+                  {formatUsdgGrouped(machine.totalPlatformFeeUnits)}
+                </div>
+                <div style={{ fontSize: '8px', color: '#777', marginTop: '2px' }}>
+                  {PLATFORM_FEE_RECIPIENTS.map((r) => (
+                    <div key={r.role}>
+                      {r.shareLabel}{' '}
+                      {formatUsdgGrouped(
+                        r.role === 'PRIMARY' ? machine.primaryFeeUnits : machine.buybackFeeUnits,
+                        { decimals: 4 }
+                      )}{' '}
+                      {r.role === 'PRIMARY' ? 'treasury' : '→ RF buyback'}
+                    </div>
+                  ))}
                 </div>
               </div>
               <div>
@@ -428,6 +523,159 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
 
             {isFixed && machine.status === 'SOLD_OUT' && (
               <FixedOddsSoldOutReport machine={machine as FixedOddsMachine} realized={realized} />
+            )}
+          </div>
+
+          {/*
+            Machine Vault — visible to EVERYONE, not just the operator.
+
+            Players are owed transparency about what is still sitting behind the
+            pull button, so the escrow breakdown is public. Only the controls
+            below it are gated on operator rights.
+          */}
+          <div className="pixel-panel">
+            <div className="pixel-marquee" style={{ margin: '-16px -16px 12px -16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <PixelIcon name="lock" size={16} color="#ffffff" />
+                <span style={{ fontSize: '11px' }}>MACHINE VAULT — ESCROW STILL LOCKED</span>
+              </div>
+              <span
+                style={{
+                  fontSize: '9px',
+                  fontFamily: 'var(--font-lcd)',
+                  background: '#000',
+                  color: '#fff',
+                  padding: '1px 4px',
+                }}
+              >
+                {isPaused ? 'PAUSED' : vaultIsClosed ? 'CLOSED' : 'LIVE'}
+              </span>
+            </div>
+
+            {escrowIsEmpty ? (
+              <div style={{ fontSize: '11px', color: '#666' }}>
+                No prize escrow remains in this machine.
+                {machine.withdrawnAt !== undefined && ' It was returned to its creator.'}
+              </div>
+            ) : (
+              <div style={econGridStyle}>
+                <div className="pixel-panel-sunken" style={econTileStyle}>
+                  <div style={econCaptionStyle}>USDG CASHBACK LEFT</div>
+                  <div style={econValueStyle}>{formatUsdgGrouped(escrow.usdgUnits)}</div>
+                </div>
+                <div className="pixel-panel-sunken" style={econTileStyle}>
+                  <div style={econCaptionStyle}>RF CASHBACK LEFT</div>
+                  <div style={econValueStyle}>{formatRFGrouped(escrow.rfUnits)}</div>
+                </div>
+                <div className="pixel-panel-sunken" style={econTileStyle}>
+                  <div style={econCaptionStyle}>RARE FRIENDS LEFT</div>
+                  <div style={econValueStyle}>{escrow.friends.length}</div>
+                </div>
+                <div className="pixel-panel-sunken" style={econTileStyle}>
+                  <div style={econCaptionStyle}>TOTAL VAULT VALUE</div>
+                  <div style={econValueStyle}>{formatUsdgGrouped(escrow.totalUsdgValueUnits)}</div>
+                </div>
+              </div>
+            )}
+
+            {(machine.escrowUsdgWithdrawnUnits > 0n ||
+              machine.escrowRfWithdrawnUnits > 0n ||
+              machine.escrowFriendsWithdrawnCount > 0) && (
+              <div
+                style={{
+                  marginTop: '10px',
+                  padding: '8px 10px',
+                  border: '2px dashed var(--color-black)',
+                  fontSize: '10px',
+                }}
+              >
+                <strong>ESCROW ALREADY WITHDRAWN</strong>
+                <div style={{ fontFamily: 'var(--font-lcd)', marginTop: '4px', color: '#555' }}>
+                  {formatUsdgGrouped(machine.escrowUsdgWithdrawnUnits)} USDG •{' '}
+                  {formatRFGrouped(machine.escrowRfWithdrawnUnits)} RF •{' '}
+                  {machine.escrowFriendsWithdrawnCount} RARE FRIENDS
+                </div>
+              </div>
+            )}
+
+            {isPaused && machine.pausedAt !== undefined && (
+              <div style={{ marginTop: '10px', fontSize: '10px', color: '#666' }}>
+                PAUSED AT {new Date(machine.pausedAt).toLocaleString()} — pulls are suspended.
+                Every prize above is still intact and still withdrawable.
+              </div>
+            )}
+
+            {/*
+              Operator controls. These are gated in the domain layer too, so a
+              hidden/disabled button here is convenience, not the security
+              boundary — an unauthorized call still throws.
+            */}
+            {!vaultIsClosed && (pauseEligibility.ok || resumeEligibility.ok) && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '12px',
+                  border: '2px dashed var(--color-black)',
+                  background: 'var(--color-lcd-bg)',
+                }}
+              >
+                <div style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>
+                  CREATOR VAULT CONTROLS
+                </div>
+                <div style={{ fontSize: '10px', marginBottom: '10px' }}>
+                  {isPaused
+                    ? 'This machine is paused. Resume it to take pulls again, or withdraw the entire remaining escrow and close the machine for good. Players keep every prize they already won, and the published odds never change.'
+                    : 'Pause this machine to suspend pulls without touching the escrow, then decide later whether to resume it or withdraw what is left.'}
+                </div>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  {pauseEligibility.ok && (
+                    <button
+                      type="button"
+                      className="pixel-btn pixel-btn-sm"
+                      style={{ background: '#000', color: '#fff' }}
+                      onClick={handlePause}
+                    >
+                      PAUSE MACHINE
+                    </button>
+                  )}
+                  {resumeEligibility.ok && (
+                    <button
+                      type="button"
+                      className="pixel-btn pixel-btn-sm"
+                      style={{ background: '#000', color: '#fff' }}
+                      onClick={handleResume}
+                    >
+                      RESUME PULLS
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    onClick={handleWithdraw}
+                    disabled={!withdrawEligibility.ok}
+                    title={withdrawEligibility.ok ? undefined : withdrawEligibility.reason}
+                    style={
+                      withdrawEligibility.ok
+                        ? { background: '#fff', color: '#000', borderColor: '#000' }
+                        : undefined
+                    }
+                  >
+                    WITHDRAW ESCROW & CLOSE
+                  </button>
+                </div>
+                {!withdrawEligibility.ok && !vaultIsClosed && (
+                  <div
+                    style={{
+                      marginTop: '8px',
+                      fontSize: '10px',
+                      fontFamily: 'var(--font-lcd)',
+                      color: '#555',
+                    }}
+                  >
+                    ! {withdrawEligibility.reason}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -472,8 +720,13 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
                           ? 'friend'
                           : evt.type === 'RF_PRIZE_PAID'
                           ? 'rf'
-                          : evt.type === 'RF_BURNED'
+                          : evt.type === 'PLATFORM_FEE_COLLECTED' ||
+                            evt.type === 'PLATFORM_FEE_SPLIT'
                           ? 'burn'
+                          : evt.type === 'MACHINE_PAUSED' ||
+                            evt.type === 'MACHINE_RESUMED' ||
+                            evt.type === 'ESCROW_WITHDRAWN'
+                          ? 'lock'
                           : 'pull'
                       }
                       size={14}
@@ -501,6 +754,14 @@ export const MachineDetail: React.FC<MachineDetailProps> = ({
           onClose={() => setShowRules(false)}
           onCancelMachine={handleCancel}
           canCancel={isOwnMachine || machine.creatorAddress === playerAddress || machine.pullCount === 0}
+          onPauseMachine={handlePause}
+          onResumeMachine={handleResume}
+          onWithdrawEscrow={handleWithdraw}
+          canPause={pauseEligibility.ok}
+          canResume={resumeEligibility.ok}
+          canWithdraw={withdrawEligibility.ok}
+          withdrawBlockedReason={withdrawEligibility.reason}
+          isPaused={isPaused}
         />
       )}
     </div>
@@ -532,15 +793,15 @@ const FiniteDeckEconomics: React.FC<{ machine: FiniteDeckMachine }> = ({ machine
   <div style={econGridStyle}>
     <div className="pixel-panel-sunken" style={econTileStyle}>
       <div style={econCaptionStyle}>PULL PRICE</div>
-      <div style={econValueStyle} title={formatRFGrouped(machine.pullPriceUnits)}>
-        {formatRFGrouped(machine.pullPriceUnits)}
+      <div style={econValueStyle} title={formatUsdgGrouped(machine.pullPriceUnits)}>
+        {formatUsdgGrouped(machine.pullPriceUnits)}
       </div>
     </div>
 
     <div className="pixel-panel-sunken" style={econTileStyle}>
-      <div style={econCaptionStyle}>BURN PER PULL</div>
+      <div style={econCaptionStyle}>FEE PER PULL</div>
       <div style={econValueStyle}>
-        {formatRFGrouped((machine.pullPriceUnits * 500n) / 10000n)} (5%)
+        {formatUsdgGrouped((machine.pullPriceUnits * PLATFORM_FEE_BPS) / 10000n)} (5%)
       </div>
     </div>
 
@@ -592,15 +853,15 @@ const FixedOddsEconomics: React.FC<{
     <div style={econGridStyle}>
       <div className="pixel-panel-sunken" style={econTileStyle}>
         <div style={econCaptionStyle}>PULL PRICE</div>
-        <div style={econValueStyle} title={formatRFGrouped(machine.pullPriceUnits)}>
-          {formatRFGrouped(machine.pullPriceUnits)}
+        <div style={econValueStyle} title={formatUsdgGrouped(machine.pullPriceUnits)}>
+          {formatUsdgGrouped(machine.pullPriceUnits)}
         </div>
       </div>
 
       <div className="pixel-panel-sunken" style={econTileStyle}>
-        <div style={econCaptionStyle}>BURN PER PULL</div>
+        <div style={econCaptionStyle}>FEE PER PULL</div>
         <div style={econValueStyle}>
-          {formatRFGrouped((machine.pullPriceUnits * 500n) / 10000n)} (5%)
+          {formatUsdgGrouped((machine.pullPriceUnits * PLATFORM_FEE_BPS) / 10000n)} (5%)
         </div>
       </div>
 
@@ -658,9 +919,9 @@ const FixedOddsSoldOutReport: React.FC<{
       ★ MACHINE SOLD OUT ★
     </div>
     <div>TOTAL PULLS: {machine.pullCount}</div>
-    <div>TOTAL RF SPENT: {formatRFGrouped(machine.totalSpentUnits)}</div>
-    <div>TOTAL RF BURNED: {formatRFGrouped(machine.totalBurnedUnits)}</div>
-    <div>CREATOR RECEIPTS: {formatRFGrouped(machine.creatorReceiptsUnits)}</div>
+    <div>TOTAL USDG SPENT: {formatUsdgGrouped(machine.totalSpentUnits)}</div>
+    <div>TOTAL USDG PLATFORM FEE: {formatUsdgGrouped(machine.totalPlatformFeeUnits)}</div>
+    <div>CREATOR RECEIPTS: {formatUsdgGrouped(machine.creatorReceiptsUnits)}</div>
     <div>
       PRIZES DISTRIBUTED: {machine.friendPrizesAwardedCount} NFT +{' '}
       {formatRFGrouped(machine.rfPrizesPaidUnits)}

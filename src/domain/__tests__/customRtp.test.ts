@@ -1,26 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import { parseRtpPercentToBps, classifyRtp, TECHNICAL_MAX_RTP_BPS } from '../rtp.ts';
 import { createMachine } from '../machine.ts';
-import { parseRF } from '../rf.ts';
+import { parseUsdg } from '../usdg.ts';
 import { createSeedableRng } from '../deck.ts';
 import type { PrizeEntry } from '../types.ts';
 
-function rfPrizes(): PrizeEntry[] {
+function cashbackPrizes(): PrizeEntry[] {
   return [
-    { id: 'p1', type: 'RF_PRIZE', amountUnits: parseRF('50000'), initialQuantity: 2, remainingQuantity: 2 },
-    { id: 'p2', type: 'RF_PRIZE', amountUnits: parseRF('10000'), initialQuantity: 5, remainingQuantity: 5 },
+    { id: 'p1', type: 'USDG_PRIZE', amountUnits: parseUsdg('50'), initialQuantity: 2, remainingQuantity: 2 },
+    { id: 'p2', type: 'USDG_PRIZE', amountUnits: parseUsdg('10'), initialQuantity: 5, remainingQuantity: 5 },
   ];
 }
 
-function buildAt(targetRtpBps: number, pullPrice = '5000') {
+function buildAt(targetRtpBps: number, pullPrice = '5') {
   return createMachine({
     id: `m-${targetRtpBps}`,
     name: 'T',
     shellId: 'CLASSIC',
     creatorAddress: '0xC',
-    pullPriceUnits: parseRF(pullPrice),
+    pullPriceUnits: parseUsdg(pullPrice),
     targetRtpBps,
-    prizeEntries: rfPrizes(),
+    prizeEntries: cashbackPrizes(),
     rng: createSeedableRng(11),
   });
 }
@@ -67,16 +67,16 @@ describe('Custom RTP machine creation', () => {
   );
 
   it('supports >100% subsidized machines with negative margin + warning kind', () => {
-    // Cheap pull price forces high RTP: prizes 150k RF over few pulls.
+    // Cheap pull price forces high RTP: $150 of prizes over few pulls.
     const { machine } = createMachine({
       id: 'm-sub',
       name: 'SUB',
       shellId: 'MINI',
       creatorAddress: '0xC',
-      pullPriceUnits: parseRF('1000'),
+      pullPriceUnits: parseUsdg('1'),
       totalPulls: 100,
       targetRtpBps: 11000,
-      prizeEntries: rfPrizes(),
+      prizeEntries: cashbackPrizes(),
       rng: createSeedableRng(12),
     });
     expect(machine.initialRtpBps).toBeGreaterThan(10000);

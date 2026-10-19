@@ -12,6 +12,7 @@ import {
   type FixedOddsTable,
 } from '../../domain/fixedOdds.ts';
 import { formatRFGrouped } from '../../domain/rf.ts';
+import { formatUsdgGrouped } from '../../domain/usdg.ts';
 import { PixelIcon } from '../ui/PixelIcon.tsx';
 import { RfTokenIcon } from '../ui/RfTokenIcon.tsx';
 import { FriendPrizeVisual, nftIdentityLine } from '../../nfts/FriendPrizeVisual.tsx';
@@ -170,7 +171,7 @@ const FiniteDeckBody: React.FC<{
                   />
                 ) : item.type === 'FRIEND_PRIZE' ? (
                   <PixelIcon name="friend" size={14} />
-                ) : item.type === 'RF_PRIZE' ? (
+                ) : item.type === 'USDG_PRIZE' || item.type === 'RF_PRIZE' ? (
                   <RfTokenIcon size={24} decorative />
                 ) : (
                   <PixelIcon name="soldout" size={14} />
@@ -194,8 +195,8 @@ const FiniteDeckBody: React.FC<{
             </td>
             <td style={{ fontWeight: 'bold' }}>{item.probabilityPct}</td>
             <td>
-              {item.referenceValueUnits > 0n
-                ? formatRFGrouped(item.referenceValueUnits)
+              {item.usdgValueUnits > 0n
+                ? formatUsdgGrouped(item.usdgValueUnits)
                 : '—'}
             </td>
           </tr>
@@ -284,8 +285,8 @@ const FixedOddsBody: React.FC<{ table: FixedOddsTable }> = ({ table }) => (
             </td>
             <td style={{ fontWeight: 'bold' }}>{row.oddsPct}</td>
             <td>
-              {row.referenceValueUnits > 0n
-                ? formatRFGrouped(row.referenceValueUnits)
+              {row.usdgValueUnits > 0n
+                ? formatRFGrouped(row.usdgValueUnits)
                 : '—'}
             </td>
           </tr>

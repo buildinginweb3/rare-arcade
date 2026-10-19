@@ -84,7 +84,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             <br />
             SEED THE PRIZES.
             <br />
-            BURN RF WITH EVERY PULL.
+            PULL WITH USDG.
           </div>
 
           <div
@@ -104,7 +104,9 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 <strong>REAL NFTS, VERIFIED OWNERSHIP:</strong> Connect a wallet to fund a
                 machine with an NFT you actually own — Rare Friends appear first, and
                 every prize is automatically valued from its top OpenSea bid (Rare Friends
-                Generations use bids for their specific Generation when available).
+                Generations use bids for their specific Generation when available). Because
+                USDG is pegged 1:1 to the US dollar, that top bid <em>is</em> the prize's USDG
+                value — no volatile token price feeds into your RTP.
                 Funding stays simulated — nothing is transferred. Top-bid references are
                 market references, not guaranteed sale values.
               </div>
@@ -114,16 +116,28 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               <PixelIcon name="creator" size={20} />
               <div>
                 <strong>ANYONE CAN CREATE:</strong> Build a custom Friend Machine, seed it with
-                RF prizes at realistic scale (thousands+), and set the pull price & target
-                RTP — presets or any custom value.
+                USDG rewards, $RAREFRIENDS rewards, or both — plus NFTs — then set the pull
+                price & target RTP, using presets or any custom value.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <PixelIcon name="rf" size={20} />
+              <div>
+                <strong>USDG IS THE PLAY CURRENCY:</strong> Every pull is priced and paid in
+                USDG (Global Dollar), redeemable 1:1 for US dollars. Unlike a volatile token,
+                it keeps the arcade's economics predictable. You can still load a machine with
+                $RAREFRIENDS rewards <em>in addition to</em> USDG — its USDG value is locked
+                at seed time so published RTP never moves with the RF market.
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: '10px' }}>
               <PixelIcon name="burn" size={20} />
               <div>
-                <strong>5% RF BURN PER PULL:</strong> Every pull burns 5% of the RF spent,
-                powering active token deflation. The creator earns the remaining 95%.
+                <strong>5% PLATFORM FEE PER PULL:</strong> Every pull charges a 5% USDG
+                platform fee, routed 75% / 25% to Rare Arcade treasury wallets — nothing is
+                burned. The creator earns the remaining 95%.
               </div>
             </div>
 
@@ -164,9 +178,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
               marginBottom: '20px',
             }}
           >
-            <strong>SIMULATED VIBEATHON DEMO:</strong> All RF deposits, burns, payouts
-            and NFT funding in this MVP are simulated — no live transactions, approvals,
-            custody, or real funds are moved. NFT <em>ownership</em> is genuinely verified.
+            <strong>SIMULATED VIBEATHON DEMO:</strong> All USDG deposits, fee routing,
+            payouts and NFT funding in this MVP are simulated — no live transactions,
+            approvals, custody, or real funds are moved. NFT <em>ownership</em> is genuinely
+            verified.
           </div>
 
           {/* Action CTAs */}

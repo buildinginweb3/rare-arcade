@@ -10,6 +10,15 @@ interface RulesLockModalProps {
   onClose: () => void;
   onCancelMachine?: () => void;
   canCancel?: boolean;
+  /** Vault controls. Omitted entirely for viewers who do not operate this machine. */
+  onPauseMachine?: () => void;
+  onResumeMachine?: () => void;
+  onWithdrawEscrow?: () => void;
+  canPause?: boolean;
+  canResume?: boolean;
+  canWithdraw?: boolean;
+  withdrawBlockedReason?: string;
+  isPaused?: boolean;
 }
 
 export const RulesLockModal: React.FC<RulesLockModalProps> = ({
@@ -17,6 +26,14 @@ export const RulesLockModal: React.FC<RulesLockModalProps> = ({
   onClose,
   onCancelMachine,
   canCancel = false,
+  onPauseMachine,
+  onResumeMachine,
+  onWithdrawEscrow,
+  canPause = false,
+  canResume = false,
+  canWithdraw = false,
+  withdrawBlockedReason = '',
+  isPaused = false,
 }) => {
   const isFixed = isFixedOddsMachine(machine);
   return (
@@ -95,8 +112,10 @@ export const RulesLockModal: React.FC<RulesLockModalProps> = ({
               {isFixed ? ', probabilities, or machine type' : ', total ticket count, or odds'}.
             </p>
             <p style={{ marginBottom: '8px' }}>
-              <strong>2. Fixed 5% Platform Burn:</strong> Exactly 5% of all simulated RF spent on
-              pulls is permanently burned. The machine creator cannot adjust the burn rate.
+              <strong>2. Fixed 5% Platform Fee:</strong> Exactly 5% of all USDG spent on pulls is
+              charged as a platform fee. 75% goes to the Rare Arcade treasury; the other 25% is
+              used to buy and burn $RAREFRIENDS. The machine creator cannot adjust the fee rate
+              or the split.
             </p>
             {isFixed ? (
               <p style={{ marginBottom: '8px' }}>
@@ -132,7 +151,7 @@ export const RulesLockModal: React.FC<RulesLockModalProps> = ({
               <strong>{formatRFGrouped(machine.pullPriceUnits, { showSymbol: true })}</strong>
             </div>
             <div>
-              <span style={{ color: '#666' }}>PLATFORM BURN:</span> <strong>5.0% FIXED</strong>
+              <span style={{ color: '#666' }}>PLATFORM FEE:</span> <strong>5.0% FIXED</strong>
             </div>
             <div>
               <span style={{ color: '#666' }}>INITIAL RTP:</span>{' '}
@@ -182,6 +201,75 @@ export const RulesLockModal: React.FC<RulesLockModalProps> = ({
               >
                 CANCEL MACHINE & RETURN ESCROW
               </button>
+            </div>
+          )}
+
+          {/*
+            Vault controls. These appear only for the machine's operator and
+            only once cancellation is off the table (i.e. pulls have started),
+            because from that point on the vault is the only way to get unused
+            escrow back.
+          */}
+          {(canPause || canResume || canWithdraw) && (
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '12px',
+                border: '2px dashed var(--color-black)',
+                background: 'var(--color-lcd-bg)',
+              }}
+            >
+              <div style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>
+                CREATOR CONTROLS: MACHINE VAULT
+              </div>
+              <div style={{ fontSize: '11px', marginBottom: '10px' }}>
+                {isPaused
+                  ? 'Pulls are suspended. Resume to reopen this machine, or withdraw the entire remaining escrow and close it permanently. Either way the published odds, the RTP, and every prize players have already won stay exactly as they are.'
+                  : 'Pausing suspends pulls without touching a single unit of escrow — it is free and fully reversible. Withdrawing is permanent: it returns everything still locked in the machine to you and closes it for good.'}
+              </div>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {canPause && (
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    style={{ background: '#000', color: '#fff' }}
+                    onClick={onPauseMachine}
+                  >
+                    PAUSE MACHINE
+                  </button>
+                )}
+                {canResume && (
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    style={{ background: '#000', color: '#fff' }}
+                    onClick={onResumeMachine}
+                  >
+                    RESUME PULLS
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="pixel-btn pixel-btn-sm"
+                  onClick={onWithdrawEscrow}
+                  disabled={!canWithdraw}
+                  title={canWithdraw ? undefined : withdrawBlockedReason}
+                >
+                  WITHDRAW ESCROW & CLOSE
+                </button>
+              </div>
+              {!canWithdraw && withdrawBlockedReason && (
+                <div
+                  style={{
+                    marginTop: '8px',
+                    fontSize: '10px',
+                    fontFamily: 'var(--font-lcd)',
+                    color: '#555',
+                  }}
+                >
+                  ! {withdrawBlockedReason}
+                </div>
+              )}
             </div>
           )}
         </div>

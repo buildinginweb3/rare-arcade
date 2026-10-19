@@ -50,16 +50,16 @@ test.describe('deployed public demo', () => {
   const play = page.locator('button:has-text("PLAY ARCADE")');
   if (await play.isVisible().catch(() => false)) await play.click();
 
-  // Read the displayed RF balance. The header wraps differently on narrow
-  // viewports, so match the first grouped RF amount anywhere on screen.
+  // Read the displayed USDG balance (the play currency). The header wraps
+  // differently on narrow viewports, so match the first grouped USDG amount.
   const readBalance = async () => {
     const text = (await page.locator('body').innerText()).replace(/\n/g, ' ');
-    const m = /([\d,]+\.\d{2})\s*RF/.exec(text);
+    const m = /([\d,]+\.\d{2})\s*USDG/.exec(text);
     return m ? Number(m[1].replace(/,/g, '')) : null;
   };
 
   const before = await readBalance();
-  expect(before, 'player RF balance visible in header').not.toBeNull();
+  expect(before, 'player USDG balance visible in header').not.toBeNull();
 
   // Open the first machine.
   await page.locator('.cabinet-container').first().click();
@@ -69,7 +69,7 @@ test.describe('deployed public demo', () => {
   await expect(page.getByText('PULLS MADE: 1')).toBeVisible({ timeout: 20000 });
 
   const after = await readBalance();
-  expect(after, 'RF balance decreases by the pull price').toBeLessThan(before as number);
+  expect(after, 'USDG balance decreases by the pull price').toBeLessThan(before as number);
   });
 
   test('public demo: creator workshop is reachable and publishes a machine', async ({ page }) => {
@@ -87,8 +87,8 @@ test.describe('deployed public demo', () => {
   await page.locator('button:has-text("NEXT: SEED PRIZES")').click();
 
   await expect(page.getByText('STEP 2: SEED PRIZE INVENTORY')).toBeVisible();
-  await page.locator('input[type="number"]').first().fill('20000');
-  await page.locator('button:has-text("+ ADD RF PRIZE")').click();
+  await page.locator('input[type="number"]').first().fill('20');
+  await page.locator('button:has-text("+ ADD USDG REWARDS")').click();
   await expect(page.getByText('CURRENT PRIZES IN MACHINE (1)')).toBeVisible();
 
   await page.locator('button:has-text("NEXT: SET ECONOMICS")').click();

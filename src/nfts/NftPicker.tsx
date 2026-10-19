@@ -1,6 +1,6 @@
 /**
  * Generalized NFT picker: Rare Friends pinned first, other collections by
- * top-bid USD DESC, unpriced last. Search + sort + chain filters, progressive
+ * top-bid USD DESC, unpriced last. Search + sort + collection filter, progressive
  * pricing badges, collection group headers, compact cards with DETAILS.
  *
  * Keeps the monochrome pixel / Tamagotchi tray aesthetic. NFT art stays
@@ -12,15 +12,15 @@ import type { NftAsset, NftFetchState, CollectionGroup } from './types.ts';
 import { RareFriendImage } from './RareFriendImage.tsx';
 import { PixelIcon } from '../components/ui/PixelIcon.tsx';
 import { bidBadgeLabel } from './normalize.ts';
-import { formatUsdAdaptive, formatRfReferenceCompact } from './valuation.ts';
-import { formatRFGrouped } from '../domain/rf.ts';
+import { formatUsdAdaptive, formatUsdgReferenceCompact } from './valuation.ts';
+import { formatUsdgGrouped } from '../domain/usdg.ts';
+import { SETTLEMENT_CHAIN_NAME } from './chains.ts';
 
-export type PickerSort = 'DEFAULT' | 'HIGH_RF' | 'LOW_RF' | 'AZ' | 'CHAIN';
+export type PickerSort = 'DEFAULT' | 'HIGH_RF' | 'LOW_RF' | 'AZ';
 
 interface NftPickerProps {
   fetchState: NftFetchState;
   groups: CollectionGroup[];
-  rfUsd: string | null;
   refreshedAt: number | null;
   pricingComplete: boolean;
   selectedKeys: Set<string>;
@@ -40,7 +40,6 @@ const PAGE_SIZE = 60;
 export const NftPicker: React.FC<NftPickerProps> = ({
   fetchState,
   groups,
-  rfUsd,
   refreshedAt,
   pricingComplete,
   selectedKeys,
@@ -51,27 +50,17 @@ export const NftPicker: React.FC<NftPickerProps> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<PickerSort>('DEFAULT');
-  const [chainFilter, setChainFilter] = useState<string>('ALL');
+  // Rare Arcade funds Robinhood Chain only, so the filter is a collection
+  // scope (everything vs Rare Friends) rather than a chain selector.
+  const [scopeFilter, setScopeFilter] = useState<'ALL' | 'RARE_FRIENDS'>('ALL');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [detailsKey, setDetailsKey] = useState<string | null>(null);
-
-  const chains = useMemo(() => {
-    const set = new Set<string>();
-    for (const g of groups) {
-      for (const a of g.assets) set.add(a.chain);
-    }
-    return [...set].sort();
-  }, [groups]);
 
   const filteredGroups = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = groups;
-    if (chainFilter === 'RARE_FRIENDS') {
+    if (scopeFilter === 'RARE_FRIENDS') {
       list = list.filter((g) => g.isRareFriends);
-    } else if (chainFilter !== 'ALL') {
-      list = list
-        .map((g) => ({ ...g, assets: g.assets.filter((a) => a.chain === chainFilter) }))
-        .filter((g) => g.assets.length > 0);
     }
     if (q) {
       list = list
@@ -94,8 +83,8 @@ export const NftPicker: React.FC<NftPickerProps> = ({
     const rest = flat.filter((a) => !a.isRareFriends);
     const cmp = (a: NftAsset, b: NftAsset): number => {
       if (sort === 'HIGH_RF' || sort === 'LOW_RF') {
-        const ra = a.pricing?.referenceRfUnits;
-        const rb = b.pricing?.referenceRfUnits;
+        const ra = a.pricing?.usdgValueUnits;
+        const rb = b.pricing?.usdgValueUnits;
         if (ra !== undefined && rb !== undefined && ra !== rb) {
           return sort === 'HIGH_RF' ? (rb > ra ? 1 : -1) : ra > rb ? 1 : -1;
         }
@@ -103,8 +92,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
         if (ra === undefined && rb !== undefined) return 1;
         return a.tokenId.localeCompare(b.tokenId, undefined, { numeric: true });
       }
-      if (sort === 'AZ') return a.collectionName.localeCompare(b.collectionName);
-      return a.chain.localeCompare(b.chain) || a.collectionName.localeCompare(b.collectionName);
+      return a.collectionName.localeCompare(b.collectionName);
     };
     rare.sort(cmp);
     rest.sort(cmp);
@@ -123,7 +111,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
       return [...map.values()];
     };
     return [...regroup(rare), ...regroup(rest)];
-  }, [groups, query, sort, chainFilter]);
+  }, [groups, query, sort, scopeFilter]);
 
   const flatVisible = useMemo(() => filteredGroups.flatMap((g) => g.assets), [filteredGroups]);
   const shown = flatVisible.slice(0, visibleCount);
@@ -143,7 +131,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
       <div style={{ padding: '24px', textAlign: 'center', fontSize: '11px' }}>
         LOADING YOUR NFTS…
         <div style={{ fontSize: '9px', color: '#666', marginTop: '6px', fontFamily: 'var(--font-lcd)' }}>
-          DISCOVERING SUPPORTED HOLDINGS ACROSS CHAINS
+          DISCOVERING YOUR ROBINHOOD CHAIN NFTS
         </div>
       </div>
     );
@@ -167,8 +155,8 @@ export const NftPicker: React.FC<NftPickerProps> = ({
         <PixelIcon name="friend" size={32} />
         <div style={{ fontWeight: 'bold', fontSize: '12px', marginTop: '8px' }}>NO NFTS FOUND</div>
         <p style={{ fontSize: '10px', color: '#555', marginTop: '6px' }}>
-          This wallet holds no supported NFTs on the scanned chains. Only NFTs
-          actually held by the connected wallet can fund a machine.
+          This wallet holds no NFTs on Robinhood Chain. Only NFTs actually held
+          by the connected wallet can fund a machine.
         </p>
       </div>
     );
@@ -193,8 +181,8 @@ export const NftPicker: React.FC<NftPickerProps> = ({
         }}
       >
         <span style={{ border: '1px solid #000', padding: '2px 6px', background: '#fff' }}>
-          $RAREFRIENDS MARKET PRICE{' '}
-          <strong>{rfUsd ? formatUsdAdaptive(rfUsd) : '$RF PRICE UNAVAILABLE'}</strong>
+          NFT TOP BIDS IN USDG{' '}
+          <strong>USDG (PEGS 1:1 TO USD)</strong>
         </span>
         <span style={{ border: '1px solid #000', padding: '2px 6px', background: '#fff' }}>
           UPDATED {age === null ? '—' : age < 5 ? 'JUST NOW' : `${age} SEC AGO`}
@@ -207,7 +195,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
         </button>
       </div>
 
-      {/* Search + sort + chain filters */}
+      {/* Search + sort + collection scope */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px', alignItems: 'center' }}>
         <input
           type="text"
@@ -238,27 +226,36 @@ export const NftPicker: React.FC<NftPickerProps> = ({
             <option value="HIGH_RF">HIGHEST RF VALUE</option>
             <option value="LOW_RF">LOWEST RF VALUE</option>
             <option value="AZ">COLLECTION A–Z</option>
-            <option value="CHAIN">CHAIN</option>
           </select>
         </label>
       </div>
       <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        {['ALL', 'RARE_FRIENDS', ...chains].map((c) => (
+        {(['ALL', 'RARE_FRIENDS'] as const).map((c) => (
           <button
             key={c}
             type="button"
-            className={`pixel-btn pixel-btn-sm ${chainFilter === c ? 'pixel-btn-primary' : ''}`}
+            className={`pixel-btn pixel-btn-sm ${scopeFilter === c ? 'pixel-btn-primary' : ''}`}
             onClick={() => {
-              setChainFilter(c);
+              setScopeFilter(c);
               setVisibleCount(PAGE_SIZE);
             }}
           >
-            {c === 'ALL' ? 'ALL' : c === 'RARE_FRIENDS' ? 'RARE FRIENDS' : c.toUpperCase()}
+            {c === 'ALL' ? 'ALL' : 'RARE FRIENDS'}
           </button>
         ))}
+        <span
+          style={{
+            fontSize: '9px',
+            fontFamily: 'var(--font-lcd)',
+            color: '#555',
+            alignSelf: 'center',
+          }}
+        >
+          {SETTLEMENT_CHAIN_NAME.toUpperCase()} CHAIN ONLY
+        </span>
       </div>
 
-      {rareOwned > 0 && chainFilter === 'ALL' && !query && (
+      {rareOwned > 0 && scopeFilter === 'ALL' && !query && (
         <div style={{ fontSize: '9px', fontFamily: 'var(--font-lcd)', color: '#555', marginBottom: '8px' }}>
           RARE FRIENDS OWNED: {rareOwned} — ALWAYS SHOWN FIRST
         </div>
@@ -301,7 +298,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
               ) : g.priced && g.topBidUsd ? (
                 <>
                   TOP BID: {formatUsdAdaptive(g.topBidUsd)} • RF REF:{' '}
-                  {g.referenceRfUnits !== undefined ? formatRfReferenceCompact(g.referenceRfUnits) : '—'} • OWNED:{' '}
+                  {g.referenceRfUnits !== undefined ? formatUsdgReferenceCompact(g.referenceRfUnits) : '—'} • OWNED:{' '}
                   {g.ownedCount}
                 </>
               ) : (
@@ -324,7 +321,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
               const reserved = reservedKeys.has(key) || reservedKeys.has(`${a.chainId ?? a.chain}:${a.contract.toLowerCase()}:${a.tokenId}`);
               const selected = selectedKeys.has(key);
               const p = a.pricing;
-              const refUnits = p?.referenceRfUnits;
+              const refUnits = p?.usdgValueUnits;
               const isDetails = detailsKey === key;
               return (
                 <div
@@ -396,10 +393,8 @@ export const NftPicker: React.FC<NftPickerProps> = ({
                     {p?.state === 'priced' && refUnits !== undefined ? (
                       <>
                         <div>TOP BID {formatUsdAdaptive(p.topBidUsd ?? '')}</div>
-                        <div style={{ fontWeight: 'bold' }}>{formatRfReferenceCompact(refUnits)}</div>
+                        <div style={{ fontWeight: 'bold' }}>{formatUsdgReferenceCompact(refUnits)}</div>
                       </>
-                    ) : p?.state === 'rf_unavailable' ? (
-                      <div>$RF PRICE UNAVAILABLE</div>
                     ) : p?.state === 'loading' || !p ? (
                       <div>PRICING…</div>
                     ) : (
@@ -409,7 +404,7 @@ export const NftPicker: React.FC<NftPickerProps> = ({
                   <div style={{ marginTop: '4px', display: 'flex', gap: '4px', justifyContent: 'center', flexWrap: 'wrap' }}>
                     {a.ownershipVerified ? (
                       <span style={{ fontSize: '8px', background: '#000', color: '#fff', padding: '2px 4px' }}>
-                        {a.verificationSource === 'opensea' ? 'OWNERSHIP RECHECKED' : 'OWNERSHIP VERIFIED'}
+                        OWNERSHIP VERIFIED ON-CHAIN
                       </span>
                     ) : (
                       <span style={{ fontSize: '8px', border: '1px solid #000', padding: '1px 4px' }}>
@@ -468,10 +463,9 @@ export const NftPicker: React.FC<NftPickerProps> = ({
                       </div>
                       <div>BID SOURCE: {p?.bidLabel ?? bidBadgeLabel(a)}</div>
                       <div>TOP BID USD: {p?.topBidUsd ? formatUsdAdaptive(p.topBidUsd) : '—'}</div>
-                      <div>CURRENT $RF: {p?.rfUsd ? formatUsdAdaptive(p.rfUsd) : rfUsd ? formatUsdAdaptive(rfUsd) : '—'}</div>
                       <div>
-                        RF REFERENCE:{' '}
-                        {refUnits !== undefined ? formatRFGrouped(refUnits) : 'UNPRICED'}
+                        USDG REFERENCE:{' '}
+                        {refUnits !== undefined ? formatUsdgGrouped(refUnits) : 'UNPRICED'}
                       </div>
                       {p?.traitType && (
                         <div>

@@ -20,7 +20,6 @@
  * Concurrency: max 4 parallel market requests. 429 → exponential backoff+jitter.
  */
 
-import { getSupportedChains as getChainsRegistry } from './chains.ts';
 
 const OPENSEA_BASE = 'https://api.opensea.io/api/v2';
 
@@ -60,14 +59,6 @@ const tokenPriceCache = new Map<string, CacheEntry<number | null>>();
 const inventoryCache = new Map<string, CacheEntry<{ assets: RawNft[]; truncated: boolean }>>();
 
 const inflight = new Map<string, Promise<unknown>>();
-
-function mockMode(): boolean {
-  try {
-    return (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MOCK_NFTS === '1';
-  } catch {
-    return false;
-  }
-}
 
 export class OpenSeaError extends Error {
   status: number;
@@ -211,28 +202,7 @@ export interface RfPrice {
 }
 
 // ---------------------------------------------------------------------------
-// Chains
-// ---------------------------------------------------------------------------
-
-export async function fetchSupportedChains(): Promise<{ slug: string; name: string }[]> {
-  if (mockMode()) return [{ slug: 'robinhood', name: 'Robinhood' }];
-  const data = (await osFetch('/chains')) as { chains?: { chain?: string; name?: string }[] };
-  return (data.chains ?? [])
-    .filter((c) => typeof c.chain === 'string')
-    .map((c) => ({ slug: c.chain as string, name: c.name ?? (c.chain as string) }));
-}
-
-export async function registryChains(): Promise<{ slug: string; name: string }[]> {
-  try {
-    const chains = await getChainsRegistry(() => osFetch('/chains'));
-    return chains.map((c) => ({ slug: c.slug, name: c.name }));
-  } catch {
-    return [{ slug: 'robinhood', name: 'Robinhood' }];
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Wallet inventory (multi-chain, paginated, spam-aware)
+// Wallet inventory (Robinhood Chain only, paginated, spam-aware)
 // ---------------------------------------------------------------------------
 
 const PAGE_LIMIT = 100;
@@ -256,7 +226,11 @@ export async function fetchAccountNfts(
 }
 
 /**
- * Discover NFTs owned by `address` across `chains` (controlled scan).
+ * Discover NFTs owned by `address` across the settlement chain.
+ *
+ * Rare Arcade is Robinhood-only, so callers pass at most the settlement chain
+ * (see `chains.ts`). The `chains` parameter is kept so the call shape stays
+ * obvious and a future second settlement chain is a one-line change here.
  * Filters spam/hidden by default (is_disabled / is_nsfw stay visible but
  * flagged; callers decide prominence — suspicious items never price first).
  */

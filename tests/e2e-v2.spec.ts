@@ -182,7 +182,7 @@ test.describe('Rare Arcade V2 — Verified NFT + Custom RTP', () => {
     await expect(page.locator('text=VERIFIED OWNED NFT').first()).toBeVisible();
 
     // Add RF prizes: 10,000 RF x 2
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await expect(page.locator('text=CURRENT PRIZES IN MACHINE (2)')).toBeVisible();
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
 
@@ -200,7 +200,7 @@ test.describe('Rare Arcade V2 — Verified NFT + Custom RTP', () => {
     await expect(page.locator('text=Friend #8283').first()).toBeVisible();
 
     // Player pulls: economics update
-    const pullBtn = page.locator('button:has-text("PULL — 5,000.00 RF")');
+    const pullBtn = page.locator('button:has-text("PULL — 5.00 USDG")');
     await expect(pullBtn).toBeEnabled();
     await pullBtn.click();
     await page.waitForTimeout(3400);
@@ -240,7 +240,7 @@ test.describe('Rare Arcade V2 — Verified NFT + Custom RTP', () => {
     const nameInput = page.locator('input[placeholder*="LUCKY SKELETON"]');
     await nameInput.fill('DASH SYNC');
     await page.click('button:has-text("NEXT: SEED PRIZES")');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await page.click('button:has-text("NEXT: SET ECONOMICS")');
     await page.click('button:has-text("PUBLISH FRIEND MACHINE")');
     await expect(page.locator('span:has-text("DASH SYNC")')).toBeVisible();
@@ -270,7 +270,7 @@ test.describe('Rare Arcade V2 — Verified NFT + Custom RTP', () => {
       // Workshop economics with custom RTP + suggestions
       await page.locator('nav button:has-text("BUILD MACHINE")').click();
       await page.click('button:has-text("NEXT: SEED PRIZES")');
-      await page.click('button:has-text("+ ADD RF PRIZE")');
+      await page.click('button:has-text("+ ADD USDG REWARDS")');
       await page.click('button:has-text("NEXT: SET ECONOMICS")');
       await page.click('button:has-text("CUSTOM")');
       await page.locator('input[placeholder*="107.5"]').fill('72.5');

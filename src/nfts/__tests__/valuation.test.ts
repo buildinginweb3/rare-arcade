@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  convertUsdToRfUnits,
+  convertUsdToUsdgUnits,
   parseUsdToScaled,
   isUsableBidValue,
   isFreshEnoughForPublish,
@@ -46,8 +46,7 @@ function priced(child: Partial<NftAsset> & { tokenId: string }, topBidUsd: strin
       state: 'priced',
       method: 'collection_top_bid',
       topBidUsd,
-      rfUsd: '0.002',
-      referenceRfUnits: refUnits,
+      usdgValueUnits: refUnits,
       fallbackUsed: false,
       valuedAt: Date.now(),
     },
@@ -55,39 +54,31 @@ function priced(child: Partial<NftAsset> & { tokenId: string }, topBidUsd: strin
 }
 
 describe('valuation math (valuation.ts)', () => {
-  it('converts top-bid USD / RF USD to exact RF reference (100 / 0.002 = 50,000 RF)', () => {
-    const units = convertUsdToRfUnits('100', '0.002');
-    // 50,000 RF = 50,000,000 internal units.
-    expect(units).toBe(50_000_000n);
+  it('values a top bid 1:1 in USDG (no price feed, no division)', () => {
+    // USDG is pegged 1:1 to USD, so $100 top bid === 100 USDG exactly.
+    expect(convertUsdToUsdgUnits('100')).toBe(100_000_000n);
+    expect(convertUsdToUsdgUnits('0.05')).toBe(50_000n);
+    expect(convertUsdToUsdgUnits('1647')).toBe(1_647_000_000n);
   });
 
-  it('handles generation fixtures exactly (25/0.0025=10k, 50/0.0025=20k, 125/0.0025=50k)', () => {
-    expect(convertUsdToRfUnits('25', '0.0025')).toBe(10_000_000n);
-    expect(convertUsdToRfUnits('50', '0.0025')).toBe(20_000_000n);
-    expect(convertUsdToRfUnits('125', '0.0025')).toBe(50_000_000n);
-  });
-
-  it('uses precise decimal math (no float drift for tiny RF prices)', () => {
-    // Live RF price shape: 0.0013825448626950097
-    const units = convertUsdToRfUnits('0.05', '0.0013825448626950097');
-    expect(typeof units).toBe('bigint');
-    expect(units! > 0n).toBe(true);
-    // Cross-check: 0.05 / 0.0013825448 ≈ 36.165 RF → 36165 units.
-    expect(units).toBe(36165n);
+  it('keeps sub-cent bids exact with no float drift', () => {
+    expect(convertUsdToUsdgUnits('0.000001')).toBe(1n);
+    expect(convertUsdToUsdgUnits('0.0000001')).toBeNull(); // below USDG precision
+    expect(convertUsdToUsdgUnits('123.456789')).toBe(123_456_789n);
   });
 
   it('rejects zero/malformed bids (never silently values at zero)', () => {
-    expect(convertUsdToRfUnits('0', '0.002')).toBeNull();
-    expect(convertUsdToRfUnits('-5', '0.002')).toBeNull();
-    expect(convertUsdToRfUnits('abc', '0.002')).toBeNull();
-    expect(convertUsdToRfUnits('100', '0')).toBeNull();
-    expect(convertUsdToRfUnits(null, '0.002')).toBeNull();
+    expect(convertUsdToUsdgUnits('0')).toBeNull();
+    expect(convertUsdToUsdgUnits('-5')).toBeNull();
+    expect(convertUsdToUsdgUnits('abc')).toBeNull();
+    expect(convertUsdToUsdgUnits(null)).toBeNull();
+    expect(convertUsdToUsdgUnits('')).toBeNull();
   });
 
-  it('parses USD strings to scaled integers', () => {
-    expect(parseUsdToScaled('1')).toBe(1_000_000_000n);
-    expect(parseUsdToScaled('0.05')).toBe(50_000_000n);
-    expect(parseUsdToScaled('1647')).toBe(1_647_000_000_000n);
+  it('parses USD strings to USDG base units (1e6)', () => {
+    expect(parseUsdToScaled('1')).toBe(1_000_000n);
+    expect(parseUsdToScaled('0.05')).toBe(50_000n);
+    expect(parseUsdToScaled('1647')).toBe(1_647_000_000n);
     expect(parseUsdToScaled('bad')).toBeNull();
   });
 
@@ -237,7 +228,7 @@ describe('wallet inventory ordering (normalize.ts groupAndSortCollections)', () 
           rareFriendsGeneration: '3',
         },
         '125',
-        50_000_000n
+        125_000_000n
       ),
     ];
     const groups = groupAndSortCollections(assets);
@@ -275,8 +266,7 @@ describe('bid badges (normalize.ts bidBadgeLabel)', () => {
         state: 'priced',
         method: 'rare_friends_generation_bid',
         topBidUsd: '50',
-        rfUsd: '0.0025',
-        referenceRfUnits: 20_000_000n,
+        usdgValueUnits: 50_000_000n,
         traitType: 'Generation',
         traitValue: '2',
         fallbackUsed: false,
@@ -293,8 +283,7 @@ describe('bid badges (normalize.ts bidBadgeLabel)', () => {
         state: 'priced',
         method: 'rare_friends_collection_bid_fallback',
         topBidUsd: '30',
-        rfUsd: '0.0025',
-        referenceRfUnits: 12_000_000n,
+        usdgValueUnits: 30_000_000n,
         fallbackUsed: true,
         valuedAt: Date.now(),
       },
@@ -309,8 +298,7 @@ describe('bid badges (normalize.ts bidBadgeLabel)', () => {
         state: 'priced',
         method: 'collection_top_bid',
         topBidUsd: '1647',
-        rfUsd: '0.002',
-        referenceRfUnits: 823_500_000n,
+        usdgValueUnits: 1_647_000_000n,
         fallbackUsed: false,
         valuedAt: Date.now(),
       },
@@ -323,8 +311,7 @@ describe('bid badges (normalize.ts bidBadgeLabel)', () => {
         state: 'priced',
         method: 'collection_top_bid',
         topBidUsd: '100',
-        rfUsd: '0.002',
-        referenceRfUnits: 50_000_000n,
+        usdgValueUnits: 100_000_000n,
         fallbackUsed: false,
         valuedAt: Date.now(),
       },
@@ -337,8 +324,7 @@ describe('bid badges (normalize.ts bidBadgeLabel)', () => {
         state: 'priced',
         method: 'item_top_bid',
         topBidUsd: '100',
-        rfUsd: '0.002',
-        referenceRfUnits: 50_000_000n,
+        usdgValueUnits: 100_000_000n,
         fallbackUsed: false,
         valuedAt: Date.now(),
       },

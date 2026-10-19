@@ -1,9 +1,10 @@
 import React from 'react';
-import type { Machine, PullResult, FriendPrizeEntry, RFPrizeEntry } from '../../domain/types.ts';
+import type { Machine, PullResult, FriendPrizeEntry } from '../../domain/types.ts';
 import { isFixedOddsMachine } from '../../domain/types.ts';
 import { isMachineSoldOut } from '../../domain/machine.ts';
 import { calculateRealizedPayoutRatio } from '../../domain/fixedOdds.ts';
 import { formatBps, formatRFGrouped } from '../../domain/rf.ts';
+import { formatUsdgGrouped } from '../../domain/usdg.ts';
 import { PixelIcon } from '../ui/PixelIcon.tsx';
 import { RareFriendSprite } from '../ui/RareFriendSprite.tsx';
 import { RfTokenIcon } from '../ui/RfTokenIcon.tsx';
@@ -11,7 +12,7 @@ import { FriendPrizeVisual, nftIdentityLine } from '../../nfts/FriendPrizeVisual
 import { PixelPullAnimation, type AnimatedShell } from './PixelPullAnimation.tsx';
 import type { PullFxResultKind } from './PixelPullFx.tsx';
 import { PrizeReveal } from './PrizeReveal.tsx';
-import { RfBurnVisual } from './RfBurnVisual.tsx';
+import { PlatformFeeVisual } from './PlatformFeeVisual.tsx';
 import { selectTopPrizeVisual } from './topPrize.ts';
 import { pullFxForShell } from './pullFx.ts';
 import { MachineTypeBadge } from './MachineTypeBadge.tsx';
@@ -72,6 +73,9 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
   const isFixed = isFixedOddsMachine(machine);
   const isSoldOut = isMachineSoldOut(machine);
   const isCancelled = machine.status === 'CANCELLED';
+  // A paused machine keeps every prize it had but accepts no pulls, so it is
+  // surfaced as its own state rather than as a generic "can't afford" case.
+  const isPaused = machine.status === 'PAUSED';
   const prizes = prizesRemaining(machine);
   const realized =
     isFixed && isSoldOut
@@ -86,10 +90,6 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
   const topFriendPrize = machine.remainingPrizes.find(
     (p): p is FriendPrizeEntry => p.type === 'FRIEND_PRIZE' && p.remainingQuantity > 0
   );
-  const topRfPrize = machine.remainingPrizes
-    .filter((p): p is RFPrizeEntry => p.type === 'RF_PRIZE' && p.remainingQuantity > 0)
-    .sort((a, b) => Number(b.amountUnits - a.amountUnits))[0];
-
   // LCD top-prize visual: real NFT art/sprite, the $RF coin for token
   // prizes, or the mascot sprite only when nothing remains.
   const topVisual = selectTopPrizeVisual(machine);
@@ -97,9 +97,11 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
 
   const topPrizeLabel = topFriendPrize
     ? `${topFriendPrize.name} (Rare Friend)`
-    : topRfPrize
-    ? `${formatRFGrouped(topRfPrize.amountUnits)}`
-    : 'No major prizes left';
+    : topVisual.kind === 'usdg'
+      ? `${formatUsdgGrouped(topVisual.entry.amountUnits)}`
+      : topVisual.kind === 'rf'
+        ? `${formatRFGrouped(topVisual.entry.amountUnits)}`
+        : 'No major prizes left';
   const topPrizeIdentity = topFriendPrize
     ? nftIdentityLine({
         collectionName: topFriendPrize.collectionName,
@@ -177,6 +179,10 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
               ) : isCancelled ? (
                 <span style={{ background: '#000', color: '#fff', padding: '1px 4px' }}>
                   CANCELLED
+                </span>
+              ) : isPaused ? (
+                <span style={{ background: '#000', color: '#fff', padding: '1px 4px' }}>
+                  PAUSED
                 </span>
               ) : (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
@@ -327,7 +333,7 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
             <div>
               <div style={{ color: '#666' }}>COST</div>
               <div style={{ fontWeight: 'bold', fontSize: '10px' }}>
-                {formatRFGrouped(machine.pullPriceUnits)}
+                {formatUsdgGrouped(machine.pullPriceUnits)}
               </div>
             </div>
             <div>
@@ -337,7 +343,7 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
               </div>
             </div>
             <div>
-              <div style={{ color: '#666' }}>BURN</div>
+              <div style={{ color: '#666' }}>FEE</div>
               <div style={{ fontWeight: 'bold', fontSize: '10px' }}>
                 5% FIXED
               </div>
@@ -348,7 +354,7 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
 
       {/* Physical Control Panel */}
       <div className="cabinet-controls">
-        {/* Token Insert / Burn Split Visual */}
+        {/* Insert / Platform Fee Split Visual */}
         <div
           style={{
             display: 'flex',
@@ -367,8 +373,8 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
             <span>95% TO OPERATOR</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold' }}>
-            <RfBurnVisual size={20} compact />
-            <span>5% RF BURN</span>
+            <PlatformFeeVisual size={20} compact />
+            <span>5% PLATFORM FEE</span>
           </div>
         </div>
 
@@ -384,7 +390,7 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
             justifyContent: 'center',
           }}
           onClick={onPull}
-          disabled={!canPull || isPulling || isSoldOut || isCancelled}
+          disabled={!canPull || isPulling || isSoldOut || isCancelled || isPaused}
           aria-live="polite"
         >
           {isPulling ? (
@@ -393,15 +399,17 @@ export const CabinetView: React.FC<CabinetViewProps> = ({
             <span>SOLD OUT</span>
           ) : isCancelled ? (
             <span>CANCELLED</span>
+          ) : isPaused ? (
+            <span>PAUSED BY CREATOR</span>
           ) : (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
               <PixelIcon name="pull" size={16} color="#ffffff" />
-              PULL — {formatRFGrouped(machine.pullPriceUnits)}
+              PULL — {formatUsdgGrouped(machine.pullPriceUnits)}
             </span>
           )}
         </button>
 
-        {pullDisabledReason && !isSoldOut && !isCancelled && (
+        {pullDisabledReason && !isSoldOut && !isCancelled && !isPaused && (
           <div
             style={{
               color: 'var(--color-black)',

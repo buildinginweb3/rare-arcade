@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { parseRF, formatRF, addRF, subRF, mulBps } from '../rf.ts';
+import { parseUsdg, formatUsdg, addUsdg, subUsdg, rfToUsdgUnits } from '../usdg.ts';
 import {
-  parseRF,
-  formatRF,
-  addRF,
-  subRF,
-  mulBps,
   calculatePullSplit,
-  BURN_BPS,
-} from '../rf.ts';
+  splitPlatformFee,
+  PLATFORM_FEE_BPS,
+  FEE_PRIMARY_SHARE_BPS,
+  PLATFORM_PRIMARY_WALLET,
+  RF_BURN_SINK,
+} from '../fees.ts';
 import {
   calculateEv,
   calculateRtpBps,
@@ -47,18 +48,101 @@ describe('Fixed-Point RF Math (rf.ts)', () => {
   it('prevents RF underflow below zero', () => {
     expect(() => subRF(100n, 200n)).toThrow(RangeError);
   });
+});
 
-  it('calculates 5% platform burn and 95% creator split with exact conservation', () => {
+describe('Fixed-Point USDG Math (usdg.ts)', () => {
+  it('parses USDG strings into 6-decimal base units', () => {
+    expect(parseUsdg('1')).toBe(1_000_000n);
+    expect(parseUsdg('10')).toBe(10_000_000n);
+    expect(parseUsdg('0.5')).toBe(500_000n);
+    expect(parseUsdg('0.000001')).toBe(1n);
+    expect(parseUsdg(100)).toBe(100_000_000n);
+    expect(parseUsdg(0)).toBe(0n);
+  });
+
+  it('rejects sub-wei precision instead of silently truncating it', () => {
+    expect(() => parseUsdg('0.0000001')).toThrow(/at most 6 decimal places/);
+  });
+
+  it('formats USDG units accurately', () => {
+    expect(formatUsdg(10_000_000n)).toBe('10.00');
+    expect(formatUsdg(500_000n)).toBe('0.50');
+    expect(formatUsdg(1_000_000n, { showSymbol: true })).toBe('1.00 USDG');
+    expect(formatUsdg(1n, { decimals: 6 })).toBe('0.000001');
+  });
+
+  it('performs exact addition and subtraction without float drift', () => {
+    const a = parseUsdg('10.5');
+    const b = parseUsdg('4.25');
+    const sum = addUsdg(a, b);
+    expect(sum).toBe(parseUsdg('14.75'));
+    expect(subUsdg(sum, b)).toBe(a);
+  });
+
+  it('prevents USDG underflow below zero', () => {
+    expect(() => subUsdg(100n, 200n)).toThrow(RangeError);
+  });
+
+  it('values RF at a locked USDG rate', () => {
+    // 1 RF at $0.002 = 2,000 USDG base units.
+    expect(rfToUsdgUnits(parseRF('1'), '0.002')).toBe(2_000n);
+    expect(rfToUsdgUnits(parseRF('12500'), '0.002')).toBe(25_000_000n);
+    expect(() => rfToUsdgUnits(parseRF('1'), '0')).toThrow();
+    expect(() => rfToUsdgUnits(parseRF('1'), 'abc')).toThrow();
+  });
+});
+
+describe('Platform Fee Routing (fees.ts)', () => {
+  it('charges exactly 5% and conserves the spend across fee + creator', () => {
     const testPrices = ['1', '5', '10', '25', '100', '0.5', '13.333'];
     for (const priceStr of testPrices) {
-      const price = parseRF(priceStr);
+      const price = parseUsdg(priceStr);
       if (price <= 0n) continue;
-      const { burnUnits, creatorUnits } = calculatePullSplit(price);
-      // Invariant: burn + creator === price
-      expect(burnUnits + creatorUnits).toBe(price);
-      // Burn is exactly 5% (500 bps)
-      expect(burnUnits).toBe(mulBps(price, BURN_BPS));
+      const { feeUnits, creatorUnits } = calculatePullSplit(price);
+      expect(feeUnits + creatorUnits).toBe(price);
+      expect(feeUnits).toBe(mulBps(price, PLATFORM_FEE_BPS));
+      expect(creatorUnits).toBe(price - feeUnits);
     }
+  });
+
+  it('splits the fee 75/25 and conserves it exactly', () => {
+    for (const feeStr of ['0.01', '0.5', '5', '100', '1234.567891']) {
+      const fee = parseUsdg(feeStr);
+      const { primaryUnits, buybackUnits } = splitPlatformFee(fee);
+      // No dust: the two shares always reconstruct the fee exactly.
+      expect(primaryUnits + buybackUnits).toBe(fee);
+      expect(primaryUnits).toBe(mulBps(fee, FEE_PRIMARY_SHARE_BPS));
+      // 75/25 split is within one base unit of exact.
+      const ratio = (primaryUnits * 10000n) / fee;
+      expect(ratio).toBeGreaterThanOrEqual(7_498n);
+      expect(ratio).toBeLessThanOrEqual(7_502n);
+    }
+  });
+
+  it('routes 75% to the treasury and accrues 25% to the RF buyback pot', () => {
+    const split = calculatePullSplit(parseUsdg('100'));
+    expect(split.feeUnits).toBe(parseUsdg('5'));
+    expect(split.primaryFeeUnits).toBe(parseUsdg('3.75'));
+    expect(split.buybackFeeUnits).toBe(parseUsdg('1.25'));
+    expect(split.creatorUnits).toBe(parseUsdg('95'));
+
+    // Treasury + buyback pot + creator === spend.
+    expect(
+      split.primaryFeeUnits + split.buybackFeeUnits + split.creatorUnits
+    ).toBe(parseUsdg('100'));
+    expect(PLATFORM_PRIMARY_WALLET).toBe('0x927A1799125EAE57B6BDc573Ee5e0354cD343Db1');
+    expect(RF_BURN_SINK.toLowerCase()).toBe('0x000000000000000000000000000000000000dead');
+  });
+
+  it('never strands or mints fee value', () => {
+    const split = calculatePullSplit(parseUsdg('100'));
+    // The full fee is accounted for; it is later spent buying RF, not lost.
+    expect(split.primaryFeeUnits + split.buybackFeeUnits).toBe(split.feeUnits);
+  });
+
+  it('rejects a non-positive pull price', () => {
+    expect(() => calculatePullSplit(0n)).toThrow(RangeError);
+    expect(() => calculatePullSplit(-1n)).toThrow(RangeError);
   });
 });
 
@@ -72,21 +156,21 @@ describe('Finite Ticket Deck & RNG (deck.ts)', () => {
       familyName: 'Skeleton',
       generation: 1,
       spriteRows: Array(16).fill('################'),
-      referenceValueUnits: 50000n, // 50 RF
+      usdgValueUnits: 50_000_000n, // $50 USDG
       initialQuantity: 1,
       remainingQuantity: 1,
     },
     {
-      id: 'p-rf-1',
-      type: 'RF_PRIZE',
-      amountUnits: 25000n, // 25 RF
+      id: 'p-usdg-1',
+      type: 'USDG_PRIZE',
+      amountUnits: 25_000_000n, // $25 USDG
       initialQuantity: 3,
       remainingQuantity: 3,
     },
     {
-      id: 'p-rf-2',
-      type: 'RF_PRIZE',
-      amountUnits: 5000n, // 5 RF
+      id: 'p-usdg-2',
+      type: 'USDG_PRIZE',
+      amountUnits: 5_000_000n, // $5 USDG
       initialQuantity: 10,
       remainingQuantity: 10,
     },
@@ -105,13 +189,17 @@ describe('Finite Ticket Deck & RNG (deck.ts)', () => {
     const deck = generateTicketDeck(dummyPrizes, totalPulls, rng);
 
     const friendTickets = deck.filter((t) => t.prizeType === 'FRIEND_PRIZE');
-    const rf25Tickets = deck.filter((t) => t.prizeType === 'RF_PRIZE' && t.rfAmountUnits === 25000n);
-    const rf5Tickets = deck.filter((t) => t.prizeType === 'RF_PRIZE' && t.rfAmountUnits === 5000n);
+    const usd25Tickets = deck.filter(
+      (t) => t.prizeType === 'USDG_PRIZE' && t.usdgAmountUnits === 25_000_000n
+    );
+    const usd5Tickets = deck.filter(
+      (t) => t.prizeType === 'USDG_PRIZE' && t.usdgAmountUnits === 5_000_000n
+    );
     const emptyTickets = deck.filter((t) => t.prizeType === 'NO_PRIZE');
 
     expect(friendTickets.length).toBe(1);
-    expect(rf25Tickets.length).toBe(3);
-    expect(rf5Tickets.length).toBe(10);
+    expect(usd25Tickets.length).toBe(3);
+    expect(usd5Tickets.length).toBe(10);
     expect(emptyTickets.length).toBe(50 - 1 - 3 - 10);
   });
 
@@ -126,23 +214,23 @@ describe('Finite Ticket Deck & RNG (deck.ts)', () => {
 
 describe('Economics Engine & Invariants (economics.ts)', () => {
   it('correctly calculates initial EV and RTP', () => {
-    // 900 RF total prizes, 100 pulls, 10 RF pull price
-    // EV = 900 / 100 = 9 RF
+    // $900 total prizes, 100 pulls, $10 pull price
+    // EV = 900 / 100 = $9
     // RTP = 9 / 10 = 90% (9000 bps)
-    const prizeUnits = parseRF('900');
-    const pullPrice = parseRF('10');
+    const prizeUnits = parseUsdg('900');
+    const pullPrice = parseUsdg('10');
     const totalPulls = 100;
 
     const ev = calculateEv(prizeUnits, totalPulls);
-    expect(ev).toBe(parseRF('9'));
+    expect(ev).toBe(parseUsdg('9'));
 
     const rtpBps = calculateRtpBps(ev, pullPrice);
     expect(rtpBps).toBe(9000);
   });
 
   it('solves recommended pulls given target RTP', () => {
-    const prizeUnits = parseRF('900');
-    const pullPrice = parseRF('10');
+    const prizeUnits = parseUsdg('900');
+    const pullPrice = parseUsdg('10');
     const targetRtp = 9000; // 90%
 
     const solved = solveRecommendedPulls(prizeUnits, pullPrice, targetRtp, 10);
@@ -160,14 +248,14 @@ describe('Economics Engine & Invariants (economics.ts)', () => {
         familyName: 'Mask',
         generation: 1,
         spriteRows: [],
-        referenceValueUnits: 50000n,
+        usdgValueUnits: 50_000_000n,
         initialQuantity: 1,
         remainingQuantity: 1,
       },
       {
         id: 'p2',
-        type: 'RF_PRIZE',
-        amountUnits: 10000n,
+        type: 'USDG_PRIZE',
+        amountUnits: 10_000_000n,
         initialQuantity: 5,
         remainingQuantity: 5,
       },
@@ -180,19 +268,19 @@ describe('Economics Engine & Invariants (economics.ts)', () => {
   });
 
   it('modeled operator margin equals 95% - RTP', () => {
-    const pullPrice = parseRF('10');
+    const pullPrice = parseUsdg('10');
     const initialPrizes: PrizeEntry[] = [
       {
         id: 'p1',
-        type: 'RF_PRIZE',
-        amountUnits: parseRF('850'),
+        type: 'USDG_PRIZE',
+        amountUnits: parseUsdg('850'),
         initialQuantity: 1,
         remainingQuantity: 1,
       },
     ];
-    // 850 RF prize, 100 pulls at 10 RF = 1000 RF gross
+    // $850 prize, 100 pulls at $10 = $1,000 gross
     // RTP = 850 / 1000 = 85%
-    // Platform burn = 5%
+    // Platform fee = 5%
     // Operator margin = 95% - 85% = 10%
     const econ = calculateMachineEconomics(initialPrizes, initialPrizes, pullPrice, 100, 100);
     expect(econ.initialRtpBps).toBe(8500);
@@ -203,11 +291,22 @@ describe('Economics Engine & Invariants (economics.ts)', () => {
 describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
   function createTestMachine(seed = 42) {
     const rng = createSeedableRng(seed);
+    // Mixes USDG cashback, RF cashback, and an NFT so both cashback
+    // escrows are exercised. RF is valued in USDG at a locked $0.002/RF.
     const prizes: PrizeEntry[] = [
+      {
+        id: 'usdg-1',
+        type: 'USDG_PRIZE',
+        amountUnits: parseUsdg('30'),
+        initialQuantity: 1,
+        remainingQuantity: 1,
+      },
       {
         id: 'rf-1',
         type: 'RF_PRIZE',
-        amountUnits: parseRF('50'),
+        amountUnits: parseRF('10000'), // 10,000 RF
+        usdgValueUnits: parseUsdg('20'), // 10,000 RF @ $0.002 = $20
+        rfPriceUsdg: '0.002',
         initialQuantity: 1,
         remainingQuantity: 1,
       },
@@ -219,17 +318,17 @@ describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
         familyName: 'Colossus',
         generation: 1,
         spriteRows: Array(16).fill('................'),
-        referenceValueUnits: parseRF('40'),
+        usdgValueUnits: parseUsdg('40'),
         initialQuantity: 1,
         remainingQuantity: 1,
       },
     ];
-    // Total prize value: 90 RF. Pull price: 10 RF. Total pulls: 10. Initial RTP = 90%.
+    // Total prize value: $90. Pull price: $10. Total pulls: 10. RTP = 90%.
     return createMachine({
       name: 'Test Machine',
       shellId: 'CLASSIC',
       creatorAddress: '0xCreator',
-      pullPriceUnits: parseRF('10'),
+      pullPriceUnits: parseUsdg('10'),
       totalPulls: 10,
       prizeEntries: prizes,
       rng,
@@ -241,7 +340,7 @@ describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
     expect(machine.isRulesLocked).toBe(false);
     expect(machine.pullCount).toBe(0);
 
-    const playerBal = parseRF('100');
+    const playerBal = parseUsdg('100');
     const { updatedMachine } = pullMachine(machine, '0xPlayer', playerBal);
 
     expect(updatedMachine.isRulesLocked).toBe(true);
@@ -251,33 +350,38 @@ describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
 
   it('prevents cancellation once pulls have started', () => {
     const { machine } = createTestMachine();
-    const playerBal = parseRF('100');
+    const playerBal = parseUsdg('100');
     const { updatedMachine } = pullMachine(machine, '0xPlayer', playerBal);
 
     expect(() => cancelMachine(updatedMachine)).toThrow(/Cannot cancel a machine after pulls have started/);
   });
 
   it('allows cancellation before first pull and refunds seeded escrow exactly', () => {
-    const { machine, seededRfEscrowUnits, seededFriends } = createTestMachine();
-    expect(seededRfEscrowUnits).toBe(parseRF('50'));
+    const { machine, seededUsdgEscrowUnits, seededRfEscrowUnits, seededFriends } =
+      createTestMachine();
+    expect(seededUsdgEscrowUnits).toBe(parseUsdg('30'));
+    expect(seededRfEscrowUnits).toBe(parseRF('10000'));
     expect(seededFriends.length).toBe(1);
 
-    const { cancelledMachine, refundRfUnits, refundFriends } = cancelMachine(machine);
+    // Cancel refunds BOTH escrows separately — the currencies never merge.
+    const { cancelledMachine, refundUsdgUnits, refundRfUnits, refundFriends } =
+      cancelMachine(machine);
     expect(cancelledMachine.status).toBe('CANCELLED');
+    expect(refundUsdgUnits).toBe(seededUsdgEscrowUnits);
     expect(refundRfUnits).toBe(seededRfEscrowUnits);
     expect(refundFriends.length).toBe(1);
     expect(refundFriends[0]?.tokenId).toBe(777n);
   });
 
-  it('rejects pulls if player has insufficient demo RF', () => {
+  it('rejects pulls if the player has insufficient USDG', () => {
     const { machine } = createTestMachine();
-    const lowBalance = parseRF('5'); // pull price is 10
-    expect(() => pullMachine(machine, '0xPlayer', lowBalance)).toThrow(/Insufficient demo RF/);
+    const lowBalance = parseUsdg('5'); // pull price is $10
+    expect(() => pullMachine(machine, '0xPlayer', lowBalance)).toThrow(/Insufficient USDG/);
   });
 
   it('transitions to SOLD_OUT when all pulls are consumed and rejects further pulls', () => {
     let { machine } = createTestMachine();
-    let playerBal = parseRF('1000');
+    let playerBal = parseUsdg('1000');
 
     // Pull 10 times until exhausted
     for (let i = 0; i < 10; i++) {
@@ -294,9 +398,9 @@ describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
     expect(() => pullMachine(machine, '0xPlayer', playerBal)).toThrow(/SOLD OUT/);
   });
 
-  it('tracks cumulative volume, burn, and creator receipts precisely across pulls', () => {
+  it('tracks cumulative volume, platform fees, and creator receipts precisely', () => {
     let { machine } = createTestMachine();
-    let playerBal = parseRF('500');
+    const playerBal = parseUsdg('500');
 
     const pullCount = 5;
     for (let i = 0; i < pullCount; i++) {
@@ -304,13 +408,42 @@ describe('Machine Lifecycle & State Invariants (machine.ts)', () => {
       machine = res.updatedMachine;
     }
 
-    const expectedSpent = parseRF('10') * BigInt(pullCount); // 50 RF
-    const expectedBurn = parseRF('2.5'); // 5% of 50 = 2.5 RF (2500 units)
-    const expectedCreator = parseRF('47.5'); // 95% of 50 = 47.5 RF (47500 units)
+    const expectedSpent = parseUsdg('10') * BigInt(pullCount); // $50
+    const expectedFee = parseUsdg('2.5'); // 5% of $50
+    const expectedCreator = parseUsdg('47.5'); // 95% of $50
 
     expect(machine.totalSpentUnits).toBe(expectedSpent);
-    expect(machine.totalBurnedUnits).toBe(expectedBurn);
+    expect(machine.totalPlatformFeeUnits).toBe(expectedFee);
     expect(machine.creatorReceiptsUnits).toBe(expectedCreator);
-    expect(machine.totalBurnedUnits + machine.creatorReceiptsUnits).toBe(machine.totalSpentUnits);
+    expect(machine.totalPlatformFeeUnits + machine.creatorReceiptsUnits).toBe(
+      machine.totalSpentUnits
+    );
+
+    // Cumulative fee is fully accounted for by the treasury + buyback shares —
+    // nothing is created or lost.
+    expect(machine.primaryFeeUnits + machine.buybackFeeUnits).toBe(
+      machine.totalPlatformFeeUnits
+    );
+  });
+
+  it('pays USDG cashback and RF cashback into separate balances', () => {
+    const { machine } = createTestMachine();
+    const playerBal = parseUsdg('1000');
+
+    // Draw every ticket so both cashback currencies must have been paid.
+    let m = machine;
+    let sawUsdg = 0n;
+    let sawRf = 0n;
+    for (let i = 0; i < 10 && m.remainingPulls > 0; i++) {
+      const res = pullMachine(m, '0xPlayer', playerBal);
+      m = res.updatedMachine;
+      sawUsdg += res.result.usdgWonUnits;
+      sawRf += res.result.rfWonUnits;
+    }
+
+    expect(sawUsdg).toBe(parseUsdg('30'));
+    expect(sawRf).toBe(parseRF('10000'));
+    expect(m.usdgPrizesPaidUnits).toBe(sawUsdg);
+    expect(m.rfPrizesPaidUnits).toBe(sawRf);
   });
 });

@@ -14,7 +14,7 @@ import {
 } from '../pullStateMachine.ts';
 import { SHELL_DURATIONS } from '../PixelPullAnimation.tsx';
 import type { PrizeEntry } from '../../../domain/types.ts';
-import { parseRF } from '../../../domain/rf.ts';
+import { parseUsdg } from '../../../domain/usdg.ts';
 
 function machineWith(prizes: PrizeEntry[]) {
   return { remainingPrizes: prizes } as { remainingPrizes: PrizeEntry[] };
@@ -53,10 +53,19 @@ describe('RfTokenIcon pixel art (RfTokenIcon.tsx)', () => {
 });
 
 describe('selectTopPrizeVisual (topPrize.ts)', () => {
+  const usdgPrize: PrizeEntry = {
+    id: 'usdg-1',
+    type: 'USDG_PRIZE',
+    amountUnits: parseUsdg('10'),
+    initialQuantity: 2,
+    remainingQuantity: 2,
+  };
   const rfPrize: PrizeEntry = {
     id: 'rf-1',
     type: 'RF_PRIZE',
-    amountUnits: parseRF('10000'),
+    amountUnits: 10000n,
+    usdgValueUnits: parseUsdg('20'),
+    rfPriceUsdg: '0.002',
     initialQuantity: 2,
     remainingQuantity: 2,
   };
@@ -67,22 +76,44 @@ describe('selectTopPrizeVisual (topPrize.ts)', () => {
     name: 'Friend #1',
     familyName: 'Generations',
     generation: 0,
-    referenceValueUnits: parseRF('250000'),
+    usdgValueUnits: parseUsdg('250'),
     initialQuantity: 1,
     remainingQuantity: 1,
   };
 
-  it('prefers a remaining Friend prize over RF tokens', () => {
+  it('prefers a remaining Friend prize over cashback', () => {
     const visual = selectTopPrizeVisual(machineWith([rfPrize, friendPrize]));
     expect(visual.kind).toBe('nft');
   });
 
-  it('renders the $RF coin when the top prize is RF tokens', () => {
+  it('renders USDG cashback as the top prize when no NFT remains', () => {
+    const visual = selectTopPrizeVisual(machineWith([usdgPrize]));
+    expect(visual.kind).toBe('usdg');
+    if (visual.kind === 'usdg') {
+      expect(visual.entry.amountUnits).toBe(parseUsdg('10'));
+    }
+  });
+
+  it('renders the $RF coin when the top prize is RF cashback', () => {
     const visual = selectTopPrizeVisual(machineWith([rfPrize]));
     expect(visual.kind).toBe('rf');
     if (visual.kind === 'rf') {
-      expect(visual.entry.amountUnits).toBe(parseRF('10000'));
+      expect(visual.entry.amountUnits).toBe(10000n);
     }
+  });
+
+  it('compares USDG and RF cashback on one USDG scale', () => {
+    // The RF line is worth $20 USDG; a $25 USDG line must outrank it...
+    const usdgBigger: PrizeEntry = {
+      id: 'usdg-25',
+      type: 'USDG_PRIZE',
+      amountUnits: parseUsdg('25'),
+      initialQuantity: 1,
+      remainingQuantity: 1,
+    };
+    expect(selectTopPrizeVisual(machineWith([rfPrize, usdgBigger])).kind).toBe('usdg');
+    // ...but a $10 USDG line must not, even though 10 > 2 is false in raw units.
+    expect(selectTopPrizeVisual(machineWith([rfPrize, usdgPrize])).kind).toBe('rf');
   });
 
   it('ignores depleted prizes when choosing the visual', () => {
@@ -146,6 +177,8 @@ describe('pullFxForShell (pullFx.ts) — shell identity matches pull behavior', 
 describe('resultKindForPrizeType (pullFx.ts) — broad hint only, never RNG', () => {
   it('maps authoritative prize types to visual hints', () => {
     expect(resultKindForPrizeType('RF_PRIZE')).toBe('rf');
+    // USDG cashback uses the same pixel coin as RF cashback.
+    expect(resultKindForPrizeType('USDG_PRIZE')).toBe('rf');
     expect(resultKindForPrizeType('FRIEND_PRIZE')).toBe('nft');
     expect(resultKindForPrizeType('NO_PRIZE')).toBe('empty');
     expect(resultKindForPrizeType(null)).toBe('empty');

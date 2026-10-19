@@ -5,6 +5,7 @@
  */
 
 import type { PrizeEntry, NftValuationSnapshot } from '../domain/types.ts';
+import { formatUsdg } from '../domain/usdg.ts';
 import type { NftAsset, NftPricing } from './types.ts';
 import { detectGenerationTrait } from './normalize.ts';
 
@@ -13,17 +14,15 @@ export interface NftPrizeBuildInput {
   asset: NftAsset;
   /** Priced valuation from the inventory pipeline (caller guarantees priced). */
   pricing: NftPricing;
-  /** RF reference in internal units, derived from pricing. */
-  refValUnits: bigint;
-  /** Fallback $RF price when the pricing snapshot lacks one. */
-  rfUsdFallback?: string | null;
+  /** USDG reference value in USDG internal units (NFT top bid, 1:1 with USD). */
+  usdgValueUnits: bigint;
   /** Fixed-odds chance per pull (same value stamped on EVERY entry). */
   oddsPpm?: number;
 }
 
 /** Build one immutable prize entry + valuation snapshot for a verified NFT. */
 export function buildNftPrizeEntry(input: NftPrizeBuildInput): PrizeEntry {
-  const { asset: verified, pricing, refValUnits, rfUsdFallback, oddsPpm } = input;
+  const { asset: verified, pricing, usdgValueUnits, oddsPpm } = input;
   const det = detectGenerationTrait(verified.traits);
   const method =
     pricing.method ??
@@ -39,8 +38,7 @@ export function buildNftPrizeEntry(input: NftPrizeBuildInput): PrizeEntry {
     topBidUsd: pricing.topBidUsd ?? '0',
     bidNative: pricing.bidNative,
     bidCurrency: pricing.bidCurrency,
-    rfUsd: pricing.rfUsd ?? rfUsdFallback ?? '0',
-    referenceRf: refValUnits.toString(),
+    referenceUsdg: formatUsdg(usdgValueUnits, { decimals: 6, trimZeros: true }),
     valuedAt: pricing.valuedAt ?? Date.now(),
     fallbackUsed: pricing.fallbackUsed ?? false,
   };
@@ -57,7 +55,7 @@ export function buildNftPrizeEntry(input: NftPrizeBuildInput): PrizeEntry {
     name: verified.name,
     familyName: verified.collectionName,
     generation: Number.isFinite(genNum) ? genNum : 0,
-    referenceValueUnits: refValUnits,
+    usdgValueUnits,
     initialQuantity: 1,
     remainingQuantity: 1,
     ...(oddsPpm !== undefined ? { oddsPpm } : {}),

@@ -78,7 +78,7 @@ export function generateTicketDeck(
           friendFamilyName: entry.familyName,
           friendGeneration: entry.generation,
           friendSpriteRows: entry.spriteRows,
-          referenceValueUnits: entry.referenceValueUnits,
+          usdgValueUnits: entry.usdgValueUnits,
           friendOrigin: entry.origin,
           friendChainId: entry.chainId,
           friendContractAddress: entry.contractAddress,
@@ -92,6 +92,17 @@ export function generateTicketDeck(
         });
         prizeTicketCount++;
       }
+    } else if (entry.type === 'USDG_PRIZE') {
+      for (let i = 0; i < entry.initialQuantity; i++) {
+        tickets.push({
+          id: `ticket-usdg-${entry.id}-${i}`,
+          prizeType: 'USDG_PRIZE',
+          prizeEntryId: entry.id,
+          usdgAmountUnits: entry.amountUnits,
+          usdgValueUnits: entry.amountUnits,
+        });
+        prizeTicketCount++;
+      }
     } else if (entry.type === 'RF_PRIZE') {
       for (let i = 0; i < entry.initialQuantity; i++) {
         tickets.push({
@@ -99,7 +110,7 @@ export function generateTicketDeck(
           prizeType: 'RF_PRIZE',
           prizeEntryId: entry.id,
           rfAmountUnits: entry.amountUnits,
-          referenceValueUnits: entry.amountUnits,
+          usdgValueUnits: entry.usdgValueUnits,
         });
         prizeTicketCount++;
       }
@@ -109,7 +120,7 @@ export function generateTicketDeck(
           id: `ticket-empty-${entry.id}-${i}`,
           prizeType: 'NO_PRIZE',
           prizeEntryId: entry.id,
-          referenceValueUnits: 0n,
+          usdgValueUnits: 0n,
         });
         prizeTicketCount++;
       }
@@ -129,7 +140,7 @@ export function generateTicketDeck(
       id: `ticket-empty-fill-${i}`,
       prizeType: 'NO_PRIZE',
       prizeEntryId: 'default-empty',
-      referenceValueUnits: 0n,
+      usdgValueUnits: 0n,
     });
   }
 

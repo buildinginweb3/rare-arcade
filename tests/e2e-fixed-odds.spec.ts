@@ -163,13 +163,13 @@ test.describe('Rare Arcade — Fixed Odds Model', () => {
 
     // Step 2: RF prizes with per-line fixed odds.
     await expect(page.locator('text=STEP 2: SEED PRIZE INVENTORY')).toBeVisible();
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await expect(page.locator('text=CURRENT PRIZES IN MACHINE (1)')).toBeVisible();
 
     await page.locator('input[type="number"]').first().fill('5000');
     await page.locator('input[type="number"]').nth(1).fill('10');
     await page.locator('input[type="number"]').nth(2).fill('4');
-    await page.click('button:has-text("+ ADD RF PRIZE")');
+    await page.click('button:has-text("+ ADD USDG REWARDS")');
     await expect(page.locator('text=CURRENT PRIZES IN MACHINE (2)')).toBeVisible();
     await expect(page.locator('text=TOTAL PRIZE ODDS')).toBeVisible();
     await expect(page.locator('text=NO-PRIZE:')).toBeVisible();
@@ -319,7 +319,7 @@ test.describe('Rare Arcade — Fixed Odds Model', () => {
       await page.locator('[data-testid="machine-type-fixed_odds"]').click();
       await expect(page.locator('text=No play limit.')).toBeVisible();
       await page.click('button:has-text("NEXT: SEED PRIZES")');
-      await page.click('button:has-text("+ ADD RF PRIZE")');
+      await page.click('button:has-text("+ ADD USDG REWARDS")');
       await page.waitForTimeout(200);
       expect(await overflow(), `overflow at ${width}px (fixed builder)`).toBe(false);
 

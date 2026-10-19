@@ -34,23 +34,21 @@ export interface ValuationSnapshot {
   topBidUsd: string;
   bidNative?: string;
   bidCurrency?: string;
-  rfUsd: string;
-  /** RF reference in internal units (1 RF = 1000), as decimal string. */
-  referenceRf: string;
+  /** USDG reference value as a decimal string. USDG is pegged 1:1 to USD. */
+  referenceUsdg: string;
   valuedAt: number;
   fallbackUsed: boolean;
 }
 
 /** Top-bid pricing attached to a wallet inventory asset. */
 export interface NftPricing {
-  state: 'priced' | 'unpriced' | 'loading' | 'rf_unavailable' | 'stale';
+  state: 'priced' | 'unpriced' | 'loading' | 'stale';
   method?: ValuationMethod;
   topBidUsd?: string;
   bidNative?: string;
   bidCurrency?: string;
-  rfUsd?: string;
-  /** RF reference in internal units. */
-  referenceRfUnits?: bigint;
+  /** USDG reference value in USDG internal units (top bid, 1:1 with USD). */
+  usdgValueUnits?: bigint;
   traitType?: string;
   traitValue?: string;
   fallbackUsed?: boolean;
@@ -64,7 +62,11 @@ export interface NftPricing {
  * collection; `collectionType` is only set for Genesis/Generations.
  */
 export interface NftAsset {
-  /** OpenSea chain slug, e.g. `robinhood`, `ethereum`, `base`. */
+  /**
+   * OpenSea chain slug. Always `robinhood` for assets Rare Arcade discovers —
+   * the platform is single-chain. Retained on the record so stored rows and
+   * reservation keys stay stable.
+   */
   chain: string;
   chainId?: number;
   contract: string;
@@ -101,7 +103,8 @@ export interface NftAsset {
 
   /** True when a fresh verification confirmed ownerAddress. */
   ownershipVerified: boolean;
-  verificationSource?: 'onchain' | 'opensea' | 'mock' | 'none';
+  /** `opensea` is no longer produced: every prize NFT verifies on-chain. */
+  verificationSource?: 'onchain' | 'mock' | 'none';
 
   /** Live market pricing (undefined while loading). */
   pricing?: NftPricing;

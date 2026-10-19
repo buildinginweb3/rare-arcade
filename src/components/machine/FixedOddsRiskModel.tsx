@@ -30,8 +30,8 @@ export const FixedOddsRiskModel: React.FC<FixedOddsRiskModelProps> = ({
     if (!open) return null;
     const lines = prizes
       .filter(
-        (e): e is Extract<typeof e, { type: 'RF_PRIZE' | 'FRIEND_PRIZE' }> =>
-          (e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') &&
+        (e): e is Extract<typeof e, { type: 'USDG_PRIZE' | 'RF_PRIZE' | 'FRIEND_PRIZE' }> =>
+          (e.type === 'USDG_PRIZE' || e.type === 'RF_PRIZE' || e.type === 'FRIEND_PRIZE') &&
           e.initialQuantity > 0 &&
           (e.oddsPpm ?? 0) > 0
       )
@@ -39,7 +39,9 @@ export const FixedOddsRiskModel: React.FC<FixedOddsRiskModelProps> = ({
         prizeEntryId: e.id,
         oddsPpm: e.oddsPpm ?? 0,
         quantity: e.initialQuantity,
-        referenceValueUnits: e.type === 'RF_PRIZE' ? e.amountUnits : e.referenceValueUnits,
+        // Every line is valued in USDG so lines in different payout
+        // currencies still combine into one expected-value total.
+        usdgValueUnits: e.type === 'USDG_PRIZE' ? e.amountUnits : e.usdgValueUnits,
       }));
     if (lines.length === 0 || pullPriceUnits <= 0n) return null;
     // Seed from prize ids so each draft gets a stable, distinct run.
@@ -106,8 +108,8 @@ export const FixedOddsRiskModel: React.FC<FixedOddsRiskModelProps> = ({
                 <div className="workshop-lcd-value">{formatRFGrouped(report.medianVolumeUnits)}</div>
               </div>
               <div className="workshop-lcd-tile">
-                <div className="workshop-lcd-caption">MEDIAN RF BURN (5%)</div>
-                <div className="workshop-lcd-value">{formatRFGrouped(report.medianBurnUnits)}</div>
+                <div className="workshop-lcd-caption">MEDIAN PLATFORM FEE (5%)</div>
+                <div className="workshop-lcd-value">{formatRFGrouped(report.medianPlatformFeeUnits)}</div>
               </div>
               <div className="workshop-lcd-tile">
                 <div className="workshop-lcd-caption">MEDIAN CREATOR RECEIPTS</div>

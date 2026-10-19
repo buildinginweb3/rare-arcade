@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseRF } from '../rf.ts';
+import { parseUsdg } from '../usdg.ts';
 import { createSeedableRng } from '../deck.ts';
 import {
   PPM_SCALE,
@@ -25,32 +25,36 @@ import {
 } from '../fixedOdds.ts';
 import { pullMachine, cancelMachine } from '../machine.ts';
 import { createInitialDemoMachines } from '../../data/demoMachines.ts';
-import type { RFPrizeEntry, FriendPrizeEntry } from '../types.ts';
+import type { UsdgPrizeEntry, FriendPrizeEntry } from '../types.ts';
 
-const PRICE_5K = parseRF('5000');
-const RICH_BALANCE = parseRF('100000000');
+const PRICE_5K = parseUsdg('5000');
+const RICH_BALANCE = parseUsdg('100000000');
 const PLAYER = '0xPlayer';
 
-function rfLine(
+/** Cashback line in the play currency (USDG). */
+function cashbackLine(
   id: string,
-  amountRf: string,
+  amountUsdg: string,
   qty: number,
   pct: string
-): RFPrizeEntry {
+): UsdgPrizeEntry {
   return {
     id,
-    type: 'RF_PRIZE',
-    amountUnits: parseRF(amountRf),
+    type: 'USDG_PRIZE',
+    amountUnits: parseUsdg(amountUsdg),
     initialQuantity: qty,
     remainingQuantity: qty,
     oddsPpm: parseOddsPercentToPpm(pct),
   };
 }
 
+/** @deprecated Kept as an alias so existing call sites read correctly. */
+const rfLine = cashbackLine;
+
 function nftLine(
   id: string,
   tokenId: bigint,
-  refRf: string,
+  refUsdg: string,
   pct: string
 ): FriendPrizeEntry {
   return {
@@ -60,7 +64,7 @@ function nftLine(
     name: `Friend #${tokenId}`,
     familyName: 'Generations',
     generation: 0,
-    referenceValueUnits: parseRF(refRf),
+    usdgValueUnits: parseUsdg(refUsdg),
     initialQuantity: 1,
     remainingQuantity: 1,
     oddsPpm: parseOddsPercentToPpm(pct),
@@ -152,7 +156,7 @@ describe('Fixed Odds validation', () => {
     ).toThrow(/derive no-prize/);
     expect(() =>
       validateFixedOddsPrizes([
-        { id: 'a', type: 'RF_PRIZE', amountUnits: parseRF('1000'), initialQuantity: 1, remainingQuantity: 1 },
+        { id: 'a', type: 'USDG_PRIZE', amountUnits: parseUsdg('1000'), initialQuantity: 1, remainingQuantity: 1 },
       ])
     ).toThrow(/valid fixed odds/);
     expect(() =>
@@ -245,9 +249,9 @@ describe('Fixed Odds creation and basic pull', () => {
     expect(result.wonPrize).toBe(false);
     expect(result.prizeType).toBe('NO_PRIZE');
     expect(result.spentUnits).toBe(PRICE_5K);
-    expect(result.burnedUnits).toBe(parseRF('250')); // 5% of 5,000
-    expect(result.creatorReceiptUnits).toBe(parseRF('4750'));
-    expect(result.burnedUnits + result.creatorReceiptUnits).toBe(PRICE_5K);
+    expect(result.platformFeeUnits).toBe(parseUsdg('250')); // 5% of 5,000
+    expect(result.creatorReceiptUnits).toBe(parseUsdg('4750'));
+    expect(result.platformFeeUnits + result.creatorReceiptUnits).toBe(PRICE_5K);
     expect(updatedMachine.pullCount).toBe(1);
     expect(updatedMachine.status).toBe('LIVE');
     expect(updatedMachine.isRulesLocked).toBe(true);
@@ -265,11 +269,11 @@ describe('Fixed Odds creation and basic pull', () => {
       pullPriceUnits: PRICE_5K,
       prizeEntries: [rfLine('a', '100000', 5, '2')],
     });
-    const before = JSON.stringify(machine.remainingPrizes.map((p) => [p.id, (p as RFPrizeEntry).oddsPpm]));
+    const before = JSON.stringify(machine.remainingPrizes.map((p) => [p.id, (p as UsdgPrizeEntry).oddsPpm]));
     const { updatedMachine } = pullFixedOddsMachine(machine, PLAYER, RICH_BALANCE, () => 0.99999);
     expect(updatedMachine.isRulesLocked).toBe(true);
     expect(
-      JSON.stringify(updatedMachine.remainingPrizes.map((p) => [p.id, (p as RFPrizeEntry).oddsPpm]))
+      JSON.stringify(updatedMachine.remainingPrizes.map((p) => [p.id, (p as UsdgPrizeEntry).oddsPpm]))
     ).toBe(before);
     expect(() => cancelMachine(updatedMachine)).toThrow(/after pulls have started/);
   });
@@ -283,10 +287,13 @@ describe('Fixed Odds creation and basic pull', () => {
       pullPriceUnits: PRICE_5K,
       prizeEntries: [rfLine('a', '100000', 2, '2'), nftLine('n', 9n, '50000', '1')],
     });
-    const { cancelledMachine, refundRfUnits, refundFriends } = cancelMachine(machine);
+    const { cancelledMachine, refundUsdgUnits, refundRfUnits, refundFriends } =
+      cancelMachine(machine);
     expect(cancelledMachine.status).toBe('CANCELLED');
     expect('deck' in cancelledMachine).toBe(false);
-    expect(refundRfUnits).toBe(parseRF('200000'));
+    // Cashback refunds in its own currency; NFTs return to the creator.
+    expect(refundUsdgUnits).toBe(parseUsdg('200000'));
+    expect(refundRfUnits).toBe(0n);
     expect(refundFriends.map((f) => f.tokenId)).toEqual([9n]);
   });
 });
@@ -316,12 +323,12 @@ describe('Sold-out slot honesty', () => {
     const miss = pullFixedOddsMachine(m, PLAYER, RICH_BALANCE, () => 0.05);
     expect(miss.result.prizeType).toBe('NO_PRIZE');
     const hitB = pullFixedOddsMachine(m, PLAYER, RICH_BALANCE, () => 0.15);
-    expect(hitB.result.prizeType).toBe('RF_PRIZE');
+    expect(hitB.result.prizeType).toBe('USDG_PRIZE');
 
     // Configured odds on the machine object never moved.
     const odds = new Map(
       m.remainingPrizes
-        .filter((p): p is RFPrizeEntry | FriendPrizeEntry => p.type !== 'NO_PRIZE')
+        .filter((p): p is UsdgPrizeEntry | FriendPrizeEntry => p.type !== 'NO_PRIZE')
         .map((p) => [p.id, p.oddsPpm])
     );
     expect(odds.get('a-nft')).toBe(100000);
@@ -384,8 +391,8 @@ describe('No play cap and sellout', () => {
       prizeEntries: [rfLine('a', '4000', 1, '100')],
     });
     const won = pullFixedOddsMachine(machine, PLAYER, RICH_BALANCE, () => 0.5);
-    expect(won.result.prizeType).toBe('RF_PRIZE');
-    expect(won.result.rfWonUnits).toBe(parseRF('4000'));
+    expect(won.result.prizeType).toBe('USDG_PRIZE');
+    expect(won.result.usdgWonUnits).toBe(parseUsdg('4000'));
     expect(won.updatedMachine.status).toBe('SOLD_OUT');
     expect(isFixedOddsInventoryEmpty(won.updatedMachine.remainingPrizes)).toBe(true);
     expect(() => pullFixedOddsMachine(won.updatedMachine, PLAYER, RICH_BALANCE, () => 0.5)).toThrow(
@@ -411,16 +418,16 @@ describe('No play cap and sellout', () => {
 });
 
 describe('Configured / live / edge / realized RTP', () => {
-  function machineAt(rtpPct: string, priceRf = '5000') {
+  function machineAt(rtpPct: string, priceUsdg = '5000') {
     // Single 100%-odds line makes configured RTP exact: EV = ref.
-    const refRf = String(Number(rtpPct) * Number(priceRf) / 100);
+    const refUsdg = String((Number(rtpPct) * Number(priceUsdg)) / 100);
     return createFixedOddsMachine({
       id: `fo-rtp-${rtpPct}`,
       name: 'RTP',
       shellId: 'CLASSIC',
       creatorAddress: '0xC',
-      pullPriceUnits: parseRF(priceRf),
-      prizeEntries: [rfLine('a', refRf, 3, '100')],
+      pullPriceUnits: parseUsdg(priceUsdg),
+      prizeEntries: [cashbackLine('a', refUsdg, 3, '100')],
     }).machine;
   }
 
@@ -459,7 +466,7 @@ describe('Configured / live / edge / realized RTP', () => {
       won.updatedMachine.totalSpentUnits
     );
     expect(realized).not.toBeNull();
-    expect(realized!.distributedUnits).toBe(parseRF('6000'));
+    expect(realized!.distributedUnits).toBe(parseUsdg('6000'));
     expect(realized!.ratioBps).toBe(12000);
     expect(calculateRealizedPayoutRatio(machine.initialPrizes, machine.remainingPrizes, 0n)).toBeNull();
   });
@@ -486,9 +493,9 @@ describe('Configured / live / edge / realized RTP', () => {
 
 describe('Target RTP assist', () => {
   const lines = [
-    { prizeEntryId: 'nft', unitRefUnits: parseRF('250000') },
-    { prizeEntryId: 'big', unitRefUnits: parseRF('100000') },
-    { prizeEntryId: 'mid', unitRefUnits: parseRF('25000') },
+    { prizeEntryId: 'nft', unitRefUnits: parseUsdg('250000') },
+    { prizeEntryId: 'big', unitRefUnits: parseUsdg('100000') },
+    { prizeEntryId: 'mid', unitRefUnits: parseUsdg('25000') },
   ];
 
   it('suggests odds landing near an 80% target without exceeding 100%', () => {
@@ -504,8 +511,8 @@ describe('Target RTP assist', () => {
   it('flags unachievable targets as capped at exactly 100%', () => {
     const { suggestions, capped } = suggestFixedOddsPpm(
       90000,
-      parseRF('1000'),
-      [{ prizeEntryId: 'only', unitRefUnits: parseRF('1000') }]
+      parseUsdg('1000'),
+      [{ prizeEntryId: 'only', unitRefUnits: parseUsdg('1000') }]
     );
     expect(capped).toBe(true);
     expect(suggestions.reduce((a, s) => a + s.oddsPpm, 0)).toBe(MAX_TOTAL_ODDS_PPM);
@@ -520,9 +527,9 @@ describe('Target RTP assist', () => {
 
 describe('Monte Carlo lifetime modeling', () => {
   const demoLines = [
-    { prizeEntryId: 'nft', oddsPpm: 2000, quantity: 1, referenceValueUnits: parseRF('250000') },
-    { prizeEntryId: 'big', oddsPpm: 10000, quantity: 3, referenceValueUnits: parseRF('100000') },
-    { prizeEntryId: 'mid', oddsPpm: 20000, quantity: 10, referenceValueUnits: parseRF('25000') },
+    { prizeEntryId: 'nft', oddsPpm: 2000, quantity: 1, usdgValueUnits: parseUsdg('250000') },
+    { prizeEntryId: 'big', oddsPpm: 10000, quantity: 3, usdgValueUnits: parseUsdg('100000') },
+    { prizeEntryId: 'mid', oddsPpm: 20000, quantity: 10, usdgValueUnits: parseUsdg('25000') },
   ];
 
   it('is deterministic per seed and valid across seeds', () => {
@@ -622,6 +629,84 @@ describe('Fixed Odds table + inventory + dispatcher', () => {
     if (forever!.machineType === 'fixed_odds') {
       expect(forever!.configuredRtpBps).toBe(8000);
       expect(forever!.liveAvailableRtpBps).toBe(8000);
+    }
+  });
+});
+
+describe('Demo fixtures are calibrated in USDG (demoMachines.ts)', () => {
+  const { machines } = createInitialDemoMachines();
+
+  it('every fixture is priced in USDG with the fixed 5% platform fee', () => {
+    for (const m of machines) {
+      expect(m.platformFeeBps, m.name).toBe(500n);
+      // Pull prices are dollars now, not thousands of RF.
+      expect(m.pullPriceUnits, m.name).toBeGreaterThan(parseUsdg('0.5'));
+      expect(m.pullPriceUnits, m.name).toBeLessThan(parseUsdg('1000'));
+    }
+  });
+
+  it('every fixture loads USDG cashback, and stacks RF cashback on top', () => {
+    for (const m of machines) {
+      const types = new Set(m.initialPrizes.map((p) => p.type));
+      expect(types.has('USDG_PRIZE'), `${m.name} has USDG cashback`).toBe(true);
+      expect(types.has('RF_PRIZE'), `${m.name} has RF cashback`).toBe(true);
+    }
+  });
+
+  it('jackpot fixtures carry an NFT prize; USDG RAIN is cashback-only', () => {
+    const withNft = machines.filter((m) =>
+      m.initialPrizes.some((p) => p.type === 'FRIEND_PRIZE')
+    );
+    expect(withNft.map((m) => m.id).sort()).toEqual([
+      'demo-machine-friend-forever',
+      'demo-machine-friend-frenzy',
+      'demo-machine-high-roller',
+    ]);
+    // A pure cashback machine is a valid design, and exercises USDG-only RTP.
+    const rain = machines.find((m) => m.id === 'demo-machine-usdg-rain')!;
+    expect(rain.initialPrizes.some((p) => p.type === 'FRIEND_PRIZE')).toBe(false);
+  });
+
+  it('every RF cashback prize has a locked USDG value (RTP never drifts)', () => {
+    for (const m of machines) {
+      for (const p of m.initialPrizes) {
+        if (p.type !== 'RF_PRIZE') continue;
+        expect(p.usdgValueUnits, `${m.name}/${p.id}`).toBeGreaterThan(0n);
+        const rate = p.rfPriceUsdg!;
+        expect(rate, `${m.name}/${p.id}`).toBe('0.002');
+        // The locked USDG value must equal amount x rate, exactly.
+        const expected = (p.amountUnits * parseUsdg(rate)) / 1000n;
+        expect(p.usdgValueUnits, `${m.name}/${p.id}`).toBe(expected);
+      }
+    }
+  });
+
+  it('finite-deck fixtures hit their targeted RTP within rounding', () => {
+    const targets: Record<string, number> = {
+      'demo-machine-usdg-rain': 9000,
+      'demo-machine-friend-frenzy': 9000,
+      'demo-machine-high-roller': 9000,
+    };
+    for (const [id, target] of Object.entries(targets)) {
+      const m = machines.find((x) => x.id === id);
+      expect(m, id).toBeDefined();
+      // initialRtpBps only exists on Finite Deck machines.
+      if (!m || m.machineType !== 'finite_deck') throw new Error(`not a finite deck: ${id}`);
+      // Integer ticket counts cause at most a few bps of drift.
+      expect(Math.abs(m.initialRtpBps - target), id).toBeLessThanOrEqual(5);
+    }
+  });
+
+  it('NFT prize values equal their locked top bid, 1:1 in USDG', () => {
+    for (const m of machines) {
+      for (const p of m.initialPrizes) {
+        if (p.type !== 'FRIEND_PRIZE') continue;
+        const snap = p.valuationSnapshot!;
+        expect(snap.source, `${m.name}/${p.id}`).toBe('demo');
+        // USDG is pegged 1:1, so the reference equals the bid in USDG units.
+        expect(p.usdgValueUnits, `${m.name}/${p.id}`).toBe(parseUsdg(snap.topBidUsd));
+        expect(snap.referenceUsdg).toBe(snap.topBidUsd);
+      }
     }
   });
 });

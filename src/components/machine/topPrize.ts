@@ -1,18 +1,21 @@
 import type {
   FriendPrizeEntry,
   Machine,
-  RFPrizeEntry,
+  RfPrizeEntry,
+  UsdgPrizeEntry,
 } from '../../domain/types.ts';
 
 export type TopPrizeVisual =
   | { kind: 'nft'; entry: FriendPrizeEntry }
-  | { kind: 'rf'; entry: RFPrizeEntry }
+  | { kind: 'usdg'; entry: UsdgPrizeEntry }
+  | { kind: 'rf'; entry: RfPrizeEntry }
   | { kind: 'mascot' };
 
 /**
  * Decide what a cabinet LCD shows as its top prize.
- * - A remaining Friend prize (real art or legacy sprite) wins over RF.
- * - RF tokens render the $RF pixel coin — never a random Rare Friend sprite.
+ * - A remaining Friend prize (real art or legacy sprite) always wins.
+ * - Otherwise the largest remaining cashback line, in USDG units so the two
+ *   cashback currencies compare against each other on one scale.
  * - The mascot sprite is only a last resort when nothing remains.
  */
 export function selectTopPrizeVisual(
@@ -23,10 +26,21 @@ export function selectTopPrizeVisual(
   );
   if (topFriend) return { kind: 'nft', entry: topFriend };
 
-  const topRf = machine.remainingPrizes
-    .filter((p): p is RFPrizeEntry => p.type === 'RF_PRIZE' && p.remainingQuantity > 0)
-    .sort((a, b) => Number(b.amountUnits - a.amountUnits))[0];
-  if (topRf) return { kind: 'rf', entry: topRf };
+  const topCashback = machine.remainingPrizes
+    .filter(
+      (p): p is UsdgPrizeEntry | RfPrizeEntry =>
+        (p.type === 'USDG_PRIZE' || p.type === 'RF_PRIZE') && p.remainingQuantity > 0
+    )
+    .sort((a, b) => {
+      const av = a.type === 'USDG_PRIZE' ? a.amountUnits : a.usdgValueUnits;
+      const bv = b.type === 'USDG_PRIZE' ? b.amountUnits : b.usdgValueUnits;
+      return av > bv ? -1 : av < bv ? 1 : 0;
+    })[0];
+  if (topCashback) {
+    return topCashback.type === 'USDG_PRIZE'
+      ? { kind: 'usdg', entry: topCashback }
+      : { kind: 'rf', entry: topCashback };
+  }
 
   return { kind: 'mascot' };
 }

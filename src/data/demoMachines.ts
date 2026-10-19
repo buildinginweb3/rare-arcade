@@ -1,8 +1,11 @@
 /**
- * Seeded SYSTEM DEMO Friend Machines (fixture v2).
- * Calibrated for low-unit-value $RAREFRIENDS: pulls in the thousands,
- * prizes in the tens/hundreds of thousands. All finite-deck math reconciles
- * exactly (see comments per machine).
+ * Seeded SYSTEM DEMO Friend Machines (fixture v5).
+ *
+ * Calibrated in USDG — the play currency. Pulls are single-digit dollars and
+ * NFT reference values are USD top bids (USDG is pegged 1:1, so top bid ==
+ * USDG value). Every machine mixes USDG cashback, optional $RAREFRIENDS
+ * cashback, and/or an NFT prize; all finite-deck math reconciles exactly
+ * (see the reconciliation comment above each machine).
  *
  * Rare Friend prizes use REAL public token references from the approved
  * collections (actual names, token IDs, artwork URLs, OpenSea links).
@@ -11,27 +14,81 @@
  */
 
 import { parseRF } from '../domain/rf.ts';
+import { parseUsdg, usdgFromUsd } from '../domain/usdg.ts';
 import { createMachine } from '../domain/machine.ts';
 import { createFixedOddsMachine } from '../domain/fixedOdds.ts';
 import { createSeedableRng } from '../domain/deck.ts';
 import { ROBINHOOD_CHAIN_ID, GENERATIONS_CONTRACT, GENESIS_CONTRACT } from '../nfts/collections.ts';
 import type { Machine, LedgerEvent, PrizeEntry, NftValuationSnapshot } from '../domain/types.ts';
 
+/**
+ * Fixed RF → USDG rate for the seeded demo fixtures.
+ *
+ * Deliberately NOT live: these fixtures must reproduce identical economics on
+ * every machine and every load, which a live quote would break. Because the
+ * rate is a constant rather than a market read, seeded RF prizes are stamped
+ * `rfPriceSource: 'fallback'` so the audit trail never implies otherwise.
+ * Creator-published machines use the live feed instead — see domain/rfPricing.ts.
+ */
+const DEMO_RF_PRICE_USDG = '0.002';
+
+/**
+ * Build an RF cashback prize whose USDG value is locked at seed time from the
+ * demo RF rate. Keeps published RTP exact while the player is paid in RF.
+ */
+function rfCashback(
+  id: string,
+  rfAmount: string,
+  initialQuantity: number,
+  oddsPpm?: number
+): PrizeEntry {
+  const rfUnits = parseRF(rfAmount);
+  return {
+    id,
+    type: 'RF_PRIZE',
+    amountUnits: rfUnits,
+    usdgValueUnits: usdgFromUsd(String(Number(rfAmount) * Number(DEMO_RF_PRICE_USDG))),
+    rfPriceUsdg: DEMO_RF_PRICE_USDG,
+    rfPriceSource: 'fallback' as const,
+    initialQuantity,
+    remainingQuantity: initialQuantity,
+    ...(oddsPpm !== undefined ? { oddsPpm } : {}),
+  };
+}
+
+/** Build a USDG cashback prize (the stable, default cashback currency). */
+function usdgCashback(
+  id: string,
+  usdgAmount: string,
+  initialQuantity: number,
+  oddsPpm?: number
+): PrizeEntry {
+  return {
+    id,
+    type: 'USDG_PRIZE',
+    amountUnits: parseUsdg(usdgAmount),
+    initialQuantity,
+    remainingQuantity: initialQuantity,
+    ...(oddsPpm !== undefined ? { oddsPpm } : {}),
+  };
+}
+
 /** Fixed demo valuation snapshot: reproducible economics, clearly labeled DEMO. */
 function demoSnapshot(
   collectionSlug: string,
-  referenceValueUnits: bigint,
+  usdgValueUnits: bigint,
   trait?: { traitType: string; traitValue: string }
 ): NftValuationSnapshot {
+  const usd = Number(usdgValueUnits) / 1_000_000;
   return {
     method: 'demo_snapshot',
     source: 'demo',
     collectionSlug,
     traitType: trait?.traitType,
     traitValue: trait?.traitValue,
-    topBidUsd: '0',
-    rfUsd: '0.002',
-    referenceRf: referenceValueUnits.toString(),
+    // USDG is pegged 1:1 to USD, so the demo top bid equals the USDG reference.
+    topBidUsd: String(usd),
+    referenceUsdg: String(usd),
     valuedAt: 1790000000000,
     fallbackUsed: false,
   };
@@ -88,35 +145,40 @@ export function createInitialDemoMachines(): {
   const machines: Machine[] = [];
   const initialEvents: LedgerEvent[] = [];
 
-  // Machine 1: RF RAIN — frequent RF prizes.
-  // Pull 1,000 RF x 100 pulls = 100,000 gross. Burn 5,000. Receipts 95,000.
-  // Prizes: 10,000x2 + 5,000x6 + 2,000x10 + 1,000x20 = 90,000.
-  // EV = 900 RF, RTP = 90.00%.
-  const rfRainPrizes: PrizeEntry[] = [
-    { id: 'rain-p-rf-10000', type: 'RF_PRIZE', amountUnits: parseRF('10000'), initialQuantity: 2, remainingQuantity: 2 },
-    { id: 'rain-p-rf-5000', type: 'RF_PRIZE', amountUnits: parseRF('5000'), initialQuantity: 6, remainingQuantity: 6 },
-    { id: 'rain-p-rf-2000', type: 'RF_PRIZE', amountUnits: parseRF('2000'), initialQuantity: 10, remainingQuantity: 10 },
-    { id: 'rain-p-rf-1000', type: 'RF_PRIZE', amountUnits: parseRF('1000'), initialQuantity: 20, remainingQuantity: 20 },
+  // Machine 1: USDG RAIN — frequent stable USDG cashback + optional RF top-ups.
+  // Pull $1.00 x 100 pulls = $100.00 gross. Platform fee 5% = $5.00.
+  // Creator receipts $95.00.
+  // Prizes: USDG $10x1 + $5x2 + $2x4 + $1x12 = $40.00
+  //         RF 12,500x2 @ $0.002 = $50.00
+  // Total $90.00 -> EV $0.90 -> RTP 90.00%.
+  const usdgRainPrizes: PrizeEntry[] = [
+    usdgCashback('rain-p-usdg-10', '10', 1),
+    usdgCashback('rain-p-usdg-5', '5', 2),
+    usdgCashback('rain-p-usdg-2', '2', 4),
+    usdgCashback('rain-p-usdg-1', '1', 12),
+    rfCashback('rain-p-rf-12500', '12500', 2),
   ];
   const m1 = createMachine({
-    id: 'demo-machine-rf-rain',
-    name: 'RF RAIN',
+    id: 'demo-machine-usdg-rain',
+    name: 'USDG RAIN',
     shellId: 'CAPSULE',
     emblem: 'coin',
     creatorAddress: '0xTokenMaster',
-    pullPriceUnits: parseRF('1000'),
+    pullPriceUnits: parseUsdg('1'),
     totalPulls: 100,
     targetRtpBps: 9000,
-    prizeEntries: rfRainPrizes,
+    prizeEntries: usdgRainPrizes,
     rng: createSeedableRng(2002),
   });
   machines.push(m1.machine);
   initialEvents.push(...m1.events);
 
-  // Machine 2: FRIEND FRENZY — real Generations NFT + RF rewards.
-  // Pull 5,000 RF x 100 pulls = 500,000 gross. Burn 25,000. Receipts 475,000.
-  // Prizes: NFT ref 250,000 + 50,000x1 + 25,000x2 + 10,000x5 + 5,000x10 = 450,000.
-  // EV = 4,500 RF, RTP = 90.00%.
+  // Machine 2: FRIEND FRENZY — real Generations NFT + USDG and RF cashback.
+  // Pull $5.00 x 100 pulls = $500.00 gross. Platform fee 5% = $25.00.
+  // Creator receipts $475.00.
+  // Prizes: NFT $250 + USDG ($50x1 + $25x2) = $100
+  //         RF 25,000x2 @ $0.002 = $100
+  // Total $450.00 -> EV $4.50 -> RTP 90.00%.
   const frenzyPrizes: PrizeEntry[] = [
     {
       id: 'frenzy-p-friend-8283',
@@ -125,7 +187,7 @@ export function createInitialDemoMachines(): {
       name: GEN_FRIEND_8283.name,
       familyName: GEN_FRIEND_8283.familyName,
       generation: GEN_FRIEND_8283.generation,
-      referenceValueUnits: parseRF('250000'),
+      usdgValueUnits: usdgFromUsd('250'),
       initialQuantity: 1,
       remainingQuantity: 1,
       origin: 'system-demo',
@@ -138,15 +200,14 @@ export function createInitialDemoMachines(): {
       imageUrl: GEN_FRIEND_8283.imageUrl,
       displayImageUrl: GEN_FRIEND_8283.imageUrl,
       openseaUrl: GEN_FRIEND_8283.openseaUrl,
-      valuationSnapshot: demoSnapshot('rare-friends-generations', parseRF('250000'), {
+      valuationSnapshot: demoSnapshot('rare-friends-generations', usdgFromUsd('250'), {
         traitType: 'Generation',
         traitValue: '0',
       }),
     },
-    { id: 'frenzy-p-rf-50000', type: 'RF_PRIZE', amountUnits: parseRF('50000'), initialQuantity: 1, remainingQuantity: 1 },
-    { id: 'frenzy-p-rf-25000', type: 'RF_PRIZE', amountUnits: parseRF('25000'), initialQuantity: 2, remainingQuantity: 2 },
-    { id: 'frenzy-p-rf-10000', type: 'RF_PRIZE', amountUnits: parseRF('10000'), initialQuantity: 5, remainingQuantity: 5 },
-    { id: 'frenzy-p-rf-5000', type: 'RF_PRIZE', amountUnits: parseRF('5000'), initialQuantity: 10, remainingQuantity: 10 },
+    usdgCashback('frenzy-p-usdg-50', '50', 1),
+    usdgCashback('frenzy-p-usdg-25', '25', 2),
+    rfCashback('frenzy-p-rf-25000', '25000', 2),
   ];
   const m2 = createMachine({
     id: 'demo-machine-friend-frenzy',
@@ -155,7 +216,7 @@ export function createInitialDemoMachines(): {
     emblem: 'trophy',
     mascotTokenId: GEN_FRIEND_8283.tokenId,
     creatorAddress: '0xOperatorAlpha',
-    pullPriceUnits: parseRF('5000'),
+    pullPriceUnits: parseUsdg('5'),
     totalPulls: 100,
     targetRtpBps: 9000,
     prizeEntries: frenzyPrizes,
@@ -164,10 +225,11 @@ export function createInitialDemoMachines(): {
   machines.push(m2.machine);
   initialEvents.push(...m2.events);
 
-  // Machine 3: HIGH ROLLER — large prizes, fewer high-cost pulls.
-  // Pull 10,000 RF x 30 pulls = 300,000 gross. Burn 15,000. Receipts 285,000.
-  // Prizes: Genesis ref 150,000 + 50,000x1 + 25,000x2 + 10,000x2 = 270,000.
-  // EV = 9,000 RF, RTP = 90.00%.
+  // Machine 3: HIGH ROLLER — Genesis jackpot, larger USDG payouts.
+  // Pull $10.00 x 30 pulls = $300.00 gross. Platform fee 5% = $15.00.
+  // Creator receipts $285.00.
+  // Prizes: NFT $150 + USDG ($50x1 + $25x2) = $100 + RF 10,000x1 = $20
+  // Total $270.00 -> EV $9.00 -> RTP 90.00%.
   const highRollerPrizes: PrizeEntry[] = [
     {
       id: 'hr-p-genesis-773',
@@ -176,7 +238,7 @@ export function createInitialDemoMachines(): {
       name: GENESIS_773.name,
       familyName: GENESIS_773.familyName,
       generation: GENESIS_773.generation,
-      referenceValueUnits: parseRF('150000'),
+      usdgValueUnits: usdgFromUsd('150'),
       initialQuantity: 1,
       remainingQuantity: 1,
       origin: 'system-demo',
@@ -189,11 +251,11 @@ export function createInitialDemoMachines(): {
       imageUrl: GENESIS_773.imageUrl,
       displayImageUrl: GENESIS_773.imageUrl,
       openseaUrl: GENESIS_773.openseaUrl,
-      valuationSnapshot: demoSnapshot('rare-friends-genesis', parseRF('150000')),
+      valuationSnapshot: demoSnapshot('rare-friends-genesis', usdgFromUsd('150')),
     },
-    { id: 'hr-p-rf-50000', type: 'RF_PRIZE', amountUnits: parseRF('50000'), initialQuantity: 1, remainingQuantity: 1 },
-    { id: 'hr-p-rf-25000', type: 'RF_PRIZE', amountUnits: parseRF('25000'), initialQuantity: 2, remainingQuantity: 2 },
-    { id: 'hr-p-rf-10000', type: 'RF_PRIZE', amountUnits: parseRF('10000'), initialQuantity: 2, remainingQuantity: 2 },
+    usdgCashback('hr-p-usdg-50', '50', 1),
+    usdgCashback('hr-p-usdg-25', '25', 2),
+    rfCashback('hr-p-rf-10000', '10000', 1),
   ];
   const m3 = createMachine({
     id: 'demo-machine-high-roller',
@@ -202,7 +264,7 @@ export function createInitialDemoMachines(): {
     emblem: 'crown',
     mascotTokenId: GENESIS_773.tokenId,
     creatorAddress: '0xHighRollerVault',
-    pullPriceUnits: parseRF('10000'),
+    pullPriceUnits: parseUsdg('10'),
     totalPulls: 30,
     targetRtpBps: 9000,
     prizeEntries: highRollerPrizes,
@@ -212,10 +274,13 @@ export function createInitialDemoMachines(): {
   initialEvents.push(...m3.events);
 
   // Machine 4: FRIEND FOREVER — Fixed Odds, no play cap.
-  // Pull 2,500 RF. Configured odds: NFT 0.20% + 100,000 RF @1.00% +
-  // 25,000 RF @2.00% = 3.20% configured; 96.80% base no-prize.
-  // EV = 250,000×0.002 + 100,000×0.01 + 25,000×0.02 = 500+1000+500 = 2,000 RF.
-  // Configured RTP = 80.00%, modeled edge +15%.
+  // Pull $2.50. Configured odds:
+  //   NFT $250 @ 0.20% = $0.50
+  //   USDG $20 @ 2.00% = $0.40
+  //   USDG $30 @ 2.00% = $0.60
+  //   RF 12,500 ($25) @ 2.00% = $0.50
+  //   -> 6.20% configured, 93.80% base no-prize
+  // EV = $2.00 -> Configured RTP 80.00%, modeled creator edge +15%.
   const foreverPrizes: PrizeEntry[] = [
     {
       id: 'forever-p-friend-5147',
@@ -224,7 +289,7 @@ export function createInitialDemoMachines(): {
       name: GEN_FRIEND_5147.name,
       familyName: GEN_FRIEND_5147.familyName,
       generation: GEN_FRIEND_5147.generation,
-      referenceValueUnits: parseRF('250000'),
+      usdgValueUnits: usdgFromUsd('250'),
       initialQuantity: 1,
       remainingQuantity: 1,
       oddsPpm: 2000, // 0.20%
@@ -238,13 +303,14 @@ export function createInitialDemoMachines(): {
       imageUrl: GEN_FRIEND_5147.imageUrl,
       displayImageUrl: GEN_FRIEND_5147.imageUrl,
       openseaUrl: GEN_FRIEND_5147.openseaUrl,
-      valuationSnapshot: demoSnapshot('rare-friends-generations', parseRF('250000'), {
+      valuationSnapshot: demoSnapshot('rare-friends-generations', usdgFromUsd('250'), {
         traitType: 'Generation',
         traitValue: '0',
       }),
     },
-    { id: 'forever-p-rf-100000', type: 'RF_PRIZE', amountUnits: parseRF('100000'), initialQuantity: 3, remainingQuantity: 3, oddsPpm: 10000 }, // 1.00%
-    { id: 'forever-p-rf-25000', type: 'RF_PRIZE', amountUnits: parseRF('25000'), initialQuantity: 10, remainingQuantity: 10, oddsPpm: 20000 }, // 2.00%
+    usdgCashback('forever-p-usdg-20', '20', 3, 20000), // 2.00%
+    usdgCashback('forever-p-usdg-30', '30', 5, 20000), // 2.00%
+    rfCashback('forever-p-rf-12500', '12500', 2, 20000), // 2.00%
   ];
   const m4 = createFixedOddsMachine({
     id: 'demo-machine-friend-forever',
@@ -253,7 +319,7 @@ export function createInitialDemoMachines(): {
     emblem: 'heart',
     mascotTokenId: GEN_FRIEND_5147.tokenId,
     creatorAddress: '0xForeverArcade',
-    pullPriceUnits: parseRF('2500'),
+    pullPriceUnits: parseUsdg('2.50'),
     targetRtpBps: 8000,
     prizeEntries: foreverPrizes,
   });

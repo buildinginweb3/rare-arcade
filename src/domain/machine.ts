@@ -4,7 +4,9 @@
  * immutability locks, and pre-first-pull cancellation.
  */
 
-import { calculatePullSplit } from './rf.ts';
+import { calculatePullSplit, PLATFORM_FEE_BPS, PLATFORM_FEE_RECIPIENTS } from './fees.ts';
+import { formatUsdg, formatUsdgGrouped } from './usdg.ts';
+import { formatRFGrouped } from './rf.ts';
 import { generateTicketDeck, type RngFunction, defaultCryptoRng } from './deck.ts';
 import {
   calculateEv,
@@ -14,6 +16,7 @@ import {
   DEFAULT_TARGET_RTP_BPS,
 } from './economics.ts';
 import { TECHNICAL_MAX_RTP_BPS } from './rtp.ts';
+import { assertFundablePrizes } from './settlement.ts';
 import {
   pullFixedOddsMachine,
   isFixedOddsInventoryEmpty,
@@ -48,6 +51,9 @@ export interface CreateMachineParams {
  */
 export function createMachine(params: CreateMachineParams): {
   machine: FiniteDeckMachine;
+  /** USDG cashback locked into escrow (USDG units). */
+  seededUsdgEscrowUnits: bigint;
+  /** RF cashback locked into escrow (RF units). */
   seededRfEscrowUnits: bigint;
   seededFriends: RareFriendMetadata[];
   events: LedgerEvent[];
@@ -75,13 +81,20 @@ export function createMachine(params: CreateMachineParams): {
     throw new Error('Prize pool cannot be empty');
   }
 
+  // Robinhood-only: reject any cross-chain NFT prize before it can be published.
+  assertFundablePrizes(prizeEntries);
+
   // Calculate total prize value & minimum pulls needed
   let prizeItemsCount = 0;
+  let seededUsdgEscrowUnits = 0n;
   let seededRfEscrowUnits = 0n;
   const seededFriends: RareFriendMetadata[] = [];
 
   for (const entry of prizeEntries) {
-    if (entry.type === 'RF_PRIZE') {
+    if (entry.type === 'USDG_PRIZE') {
+      prizeItemsCount += entry.initialQuantity;
+      seededUsdgEscrowUnits += entry.amountUnits * BigInt(entry.initialQuantity);
+    } else if (entry.type === 'RF_PRIZE') {
       prizeItemsCount += entry.initialQuantity;
       seededRfEscrowUnits += entry.amountUnits * BigInt(entry.initialQuantity);
     } else if (entry.type === 'FRIEND_PRIZE') {
@@ -92,7 +105,7 @@ export function createMachine(params: CreateMachineParams): {
         familyName: entry.familyName,
         generation: entry.generation,
         spriteRows: entry.spriteRows,
-        demoReferenceValueUnits: entry.referenceValueUnits,
+        demoUsdgValueUnits: entry.usdgValueUnits,
         origin: entry.origin,
         chainId: entry.chainId,
         chainSlug: entry.chainSlug,
@@ -150,15 +163,10 @@ export function createMachine(params: CreateMachineParams): {
   const deck = generateTicketDeck(prizeEntries, totalPulls, rng);
 
   // Deep clone initial prize entries for remaining tracking
-  const remainingPrizes: PrizeEntry[] = prizeEntries.map((p) => {
-    if (p.type === 'RF_PRIZE') {
-      return { ...p, remainingQuantity: p.initialQuantity };
-    }
-    if (p.type === 'FRIEND_PRIZE') {
-      return { ...p, remainingQuantity: p.initialQuantity };
-    }
-    return { ...p, remainingQuantity: p.initialQuantity };
-  });
+  const remainingPrizes: PrizeEntry[] = prizeEntries.map((p) => ({
+    ...p,
+    remainingQuantity: p.initialQuantity,
+  }));
 
   const now = Date.now();
   const machine: FiniteDeckMachine = {
@@ -171,14 +179,13 @@ export function createMachine(params: CreateMachineParams): {
     creatorAddress,
     status: 'READY',
     pullPriceUnits,
-    burnBps: 500n, // 5%
+    platformFeeBps: PLATFORM_FEE_BPS,
     totalPulls,
     remainingPulls: totalPulls,
-    initialPrizes: JSON.parse(JSON.stringify(prizeEntries, (_, v) => typeof v === 'bigint' ? v.toString() : v)).map((entry: PrizeEntry) => ({
+    initialPrizes: prizeEntries.map((entry) => ({
       ...entry,
-      amountUnits: 'amountUnits' in entry ? BigInt(entry.amountUnits) : undefined,
-      referenceValueUnits: 'referenceValueUnits' in entry ? BigInt(entry.referenceValueUnits) : undefined,
-      tokenId: 'tokenId' in entry ? BigInt(entry.tokenId) : undefined,
+      initialQuantity: entry.initialQuantity,
+      remainingQuantity: entry.initialQuantity,
     })),
     remainingPrizes,
     deck,
@@ -188,10 +195,16 @@ export function createMachine(params: CreateMachineParams): {
     initialEvUnits,
     currentEvUnits: initialEvUnits,
     totalSpentUnits: 0n,
-    totalBurnedUnits: 0n,
+    totalPlatformFeeUnits: 0n,
+    primaryFeeUnits: 0n,
+    buybackFeeUnits: 0n,
     creatorReceiptsUnits: 0n,
+    usdgPrizesPaidUnits: 0n,
     rfPrizesPaidUnits: 0n,
     friendPrizesAwardedCount: 0,
+    escrowUsdgWithdrawnUnits: 0n,
+    escrowRfWithdrawnUnits: 0n,
+    escrowFriendsWithdrawnCount: 0,
     pullCount: 0,
     createdAt: now,
     isRulesLocked: false,
@@ -206,9 +219,23 @@ export function createMachine(params: CreateMachineParams): {
       actorAddress: creatorAddress,
       timestamp: now,
       machineType: 'finite_deck',
-      details: `Machine "${name}" created with ${totalPulls} pulls at pull price ${pullPriceUnits / 1000n} RF (RTP: ${(initialRtpBps / 100).toFixed(1)}%)`,
+      details: `Machine "${name}" created with ${totalPulls} pulls at pull price ${formatUsdg(pullPriceUnits, { showSymbol: true })} (RTP: ${(initialRtpBps / 100).toFixed(1)}%)`,
     },
   ];
+
+  if (seededUsdgEscrowUnits > 0n) {
+    events.push({
+      id: `evt-seed-usdg-${now}-${Math.random()}`,
+      machineId: id,
+      machineName: name,
+      type: 'USDG_SEEDED',
+      actorAddress: creatorAddress,
+      timestamp: now,
+      machineType: 'finite_deck',
+      usdgAmountUnits: seededUsdgEscrowUnits,
+      details: `Escrowed ${formatUsdgGrouped(seededUsdgEscrowUnits)} in USDG cashback prize inventory`,
+    });
+  }
 
   if (seededRfEscrowUnits > 0n) {
     events.push({
@@ -220,7 +247,7 @@ export function createMachine(params: CreateMachineParams): {
       timestamp: now,
       machineType: 'finite_deck',
       rfAmountUnits: seededRfEscrowUnits,
-      details: `Seeded ${seededRfEscrowUnits / 1000n} RF in prize inventory`,
+      details: `Escrowed ${formatRFGrouped(seededRfEscrowUnits)} in $RAREFRIENDS cashback prize inventory`,
     });
   }
 
@@ -239,7 +266,7 @@ export function createMachine(params: CreateMachineParams): {
     });
   }
 
-  return { machine, seededRfEscrowUnits, seededFriends, events };
+  return { machine, seededUsdgEscrowUnits, seededRfEscrowUnits, seededFriends, events };
 }
 
 /**
@@ -272,12 +299,15 @@ export function pullFiniteDeckMachine(
   if (machine.status === 'CANCELLED') {
     throw new Error('Machine has been CANCELLED.');
   }
+  if (machine.status === 'PAUSED') {
+    throw new Error('Machine is PAUSED by its creator. No pulls until it resumes.');
+  }
   if (machine.remainingPulls <= 0 || machine.deck.length === 0) {
     throw new Error('Machine has no tickets remaining.');
   }
   if (playerBalanceUnits < machine.pullPriceUnits) {
     throw new Error(
-      `Insufficient demo RF. Pull cost: ${machine.pullPriceUnits / 1000n} RF, balance: ${playerBalanceUnits / 1000n} RF`
+      `Insufficient USDG. Pull cost: ${formatUsdgGrouped(machine.pullPriceUnits)}, balance: ${formatUsdgGrouped(playerBalanceUnits)}`
     );
   }
 
@@ -302,11 +332,14 @@ export function pullFiniteDeckMachine(
   const newCurrentEvUnits = calculateEv(newRemainingPrizeUnits, newRemainingPulls);
   const newCurrentRtpBps = calculateRtpBps(newCurrentEvUnits, machine.pullPriceUnits);
 
+  let usdgWonUnits = 0n;
   let rfWonUnits = 0n;
   let friendWon: RareFriendMetadata | undefined;
   const wonPrize = ticket.prizeType !== 'NO_PRIZE';
 
-  if (ticket.prizeType === 'RF_PRIZE') {
+  if (ticket.prizeType === 'USDG_PRIZE') {
+    usdgWonUnits = ticket.usdgAmountUnits ?? 0n;
+  } else if (ticket.prizeType === 'RF_PRIZE') {
     rfWonUnits = ticket.rfAmountUnits ?? 0n;
   } else if (ticket.prizeType === 'FRIEND_PRIZE' && ticket.friendTokenId) {
     friendWon = {
@@ -315,7 +348,7 @@ export function pullFiniteDeckMachine(
       familyName: ticket.friendFamilyName || 'Rare Friend',
       generation: ticket.friendGeneration || 1,
       spriteRows: ticket.friendSpriteRows,
-      demoReferenceValueUnits: ticket.referenceValueUnits,
+      demoUsdgValueUnits: ticket.usdgValueUnits,
       origin: ticket.friendOrigin,
       chainId: ticket.friendChainId,
       contractAddress: ticket.friendContractAddress,
@@ -341,8 +374,11 @@ export function pullFiniteDeckMachine(
     currentEvUnits: newCurrentEvUnits,
     currentRtpBps: newCurrentRtpBps,
     totalSpentUnits: machine.totalSpentUnits + machine.pullPriceUnits,
-    totalBurnedUnits: machine.totalBurnedUnits + split.burnUnits,
+    totalPlatformFeeUnits: machine.totalPlatformFeeUnits + split.feeUnits,
+    primaryFeeUnits: machine.primaryFeeUnits + split.primaryFeeUnits,
+    buybackFeeUnits: machine.buybackFeeUnits + split.buybackFeeUnits,
     creatorReceiptsUnits: machine.creatorReceiptsUnits + split.creatorUnits,
+    usdgPrizesPaidUnits: machine.usdgPrizesPaidUnits + usdgWonUnits,
     rfPrizesPaidUnits: machine.rfPrizesPaidUnits + rfWonUnits,
     friendPrizesAwardedCount: machine.friendPrizesAwardedCount + (friendWon ? 1 : 0),
     pullCount: machine.pullCount + 1,
@@ -354,10 +390,13 @@ export function pullFiniteDeckMachine(
   const result: PullResult = {
     ticket,
     spentUnits: machine.pullPriceUnits,
-    burnedUnits: split.burnUnits,
+    platformFeeUnits: split.feeUnits,
+    primaryFeeUnits: split.primaryFeeUnits,
+    buybackFeeUnits: split.buybackFeeUnits,
     creatorReceiptUnits: split.creatorUnits,
     wonPrize,
     prizeType: ticket.prizeType,
+    usdgWonUnits,
     rfWonUnits,
     friendWon,
     newRemainingPulls,
@@ -375,20 +414,53 @@ export function pullFiniteDeckMachine(
       actorAddress: playerAddress,
       timestamp: now,
       machineType: 'finite_deck',
-      rfAmountUnits: machine.pullPriceUnits,
-      details: `Player pulled "${machine.name}" for ${machine.pullPriceUnits / 1000n} RF`,
+      usdgAmountUnits: machine.pullPriceUnits,
+      details: `Player pulled "${machine.name}" for ${formatUsdgGrouped(machine.pullPriceUnits)}`,
     },
     {
-      id: `evt-burn-${now}-${Math.random()}`,
+      id: `evt-fee-${now}-${Math.random()}`,
       machineId: machine.id,
       machineName: machine.name,
-      type: 'RF_BURNED',
+      type: 'PLATFORM_FEE_COLLECTED',
       actorAddress: playerAddress,
       timestamp: now,
       machineType: 'finite_deck',
-      rfAmountUnits: split.burnUnits,
-      details: `Burned ${Number(split.burnUnits) / 1000} RF (5% fixed platform burn)`,
+      usdgAmountUnits: split.feeUnits,
+      details: `Platform fee ${formatUsdgGrouped(split.feeUnits)} (5.00% of spend)`,
     },
+    ...PLATFORM_FEE_RECIPIENTS.map(
+      (r, i): LedgerEvent =>
+        r.role === 'BUYBACK'
+          ? {
+              id: `evt-buyback-funded-${now}-${Math.random()}`,
+              machineId: machine.id,
+              machineName: machine.name,
+              type: 'RF_BUYBACK_FUNDED',
+              // The buyback pot is held by the fee router, not sent anywhere
+              // on this pull, so there is no recipient address to record yet.
+              actorAddress: machine.creatorAddress,
+              timestamp: now,
+              machineType: 'finite_deck' as const,
+              usdgAmountUnits: split.buybackFeeUnits,
+              details: `${r.shareLabel} of platform fee accrued to the RF buyback pot`,
+            }
+          : {
+              id: `evt-fee-split-${r.role}-${now}-${i}-${Math.random()}`,
+              machineId: machine.id,
+              machineName: machine.name,
+              type: 'PLATFORM_FEE_SPLIT' as const,
+              actorAddress: r.address,
+              timestamp: now,
+              machineType: 'fixed_odds' as const,
+              usdgAmountUnits: split.primaryFeeUnits,
+              feeRecipient: {
+                role: r.role,
+                address: r.address,
+                shareLabel: r.shareLabel,
+              },
+              details: `${r.shareLabel} of platform fee routed to ${r.address}`,
+            }
+    ),
     {
       id: `evt-credit-${now}-${Math.random()}`,
       machineId: machine.id,
@@ -397,12 +469,24 @@ export function pullFiniteDeckMachine(
       actorAddress: machine.creatorAddress,
       timestamp: now,
       machineType: 'finite_deck',
-      rfAmountUnits: split.creatorUnits,
-      details: `Operator received ${Number(split.creatorUnits) / 1000} RF proceeds (95%)`,
+      usdgAmountUnits: split.creatorUnits,
+      details: `Operator received ${formatUsdgGrouped(split.creatorUnits)} proceeds (95.00%)`,
     },
   ];
 
-  if (ticket.prizeType === 'RF_PRIZE' && rfWonUnits > 0n) {
+  if (ticket.prizeType === 'USDG_PRIZE' && usdgWonUnits > 0n) {
+    events.push({
+      id: `evt-usdg-won-${now}-${Math.random()}`,
+      machineId: machine.id,
+      machineName: machine.name,
+      type: 'USDG_PRIZE_PAID',
+      actorAddress: playerAddress,
+      timestamp: now,
+      machineType: 'finite_deck',
+      usdgAmountUnits: usdgWonUnits,
+      details: `Player won ${formatUsdgGrouped(usdgWonUnits)} USDG cashback!`,
+    });
+  } else if (ticket.prizeType === 'RF_PRIZE' && rfWonUnits > 0n) {
     events.push({
       id: `evt-rf-won-${now}-${Math.random()}`,
       machineId: machine.id,
@@ -412,7 +496,8 @@ export function pullFiniteDeckMachine(
       timestamp: now,
       machineType: 'finite_deck',
       rfAmountUnits: rfWonUnits,
-      details: `Player won ${rfWonUnits / 1000n} RF!`,
+      usdgAmountUnits: ticket.usdgValueUnits,
+      details: `Player won ${formatRFGrouped(rfWonUnits)} $RAREFRIENDS cashback!`,
     });
   } else if (ticket.prizeType === 'FRIEND_PRIZE' && friendWon) {
     events.push({
@@ -449,7 +534,7 @@ export function pullFiniteDeckMachine(
       actorAddress: machine.creatorAddress,
       timestamp: now,
       machineType: 'finite_deck',
-      details: `Machine "${machine.name}" has completely SOLD OUT! Total volume: ${updatedMachine.totalSpentUnits / 1000n} RF, total burned: ${Number(updatedMachine.totalBurnedUnits) / 1000} RF`,
+      details: `Machine "${machine.name}" has completely SOLD OUT! Total volume: ${formatUsdgGrouped(updatedMachine.totalSpentUnits)}, platform fees: ${formatUsdgGrouped(updatedMachine.totalPlatformFeeUnits)}`,
     });
   }
 
@@ -513,30 +598,17 @@ export function pullMachine(
  * Finite Deck clears its ticket counters; Fixed Odds has no deck to clear —
  * each model only touches its own fields (no cross-type corruption).
  */
-export function cancelMachine(machine: FiniteDeckMachine): {
-  cancelledMachine: FiniteDeckMachine;
-  refundRfUnits: bigint;
-  refundFriends: RareFriendMetadata[];
-  events: LedgerEvent[];
-};
-export function cancelMachine(machine: FixedOddsMachine): {
-  cancelledMachine: FixedOddsMachine;
-  refundRfUnits: bigint;
-  refundFriends: RareFriendMetadata[];
-  events: LedgerEvent[];
-};
-export function cancelMachine(machine: Machine): {
+export interface CancelMachineResult {
   cancelledMachine: Machine;
+  /** USDG cashback returned to the creator (USDG units). */
+  refundUsdgUnits: bigint;
+  /** RF cashback returned to the creator (RF units). */
   refundRfUnits: bigint;
   refundFriends: RareFriendMetadata[];
   events: LedgerEvent[];
-};
-export function cancelMachine(machine: Machine): {
-  cancelledMachine: Machine;
-  refundRfUnits: bigint;
-  refundFriends: RareFriendMetadata[];
-  events: LedgerEvent[];
-} {
+}
+
+export function cancelMachine(machine: Machine): CancelMachineResult {
   if (machine.pullCount > 0 || machine.isRulesLocked) {
     throw new Error('Cannot cancel a machine after pulls have started.');
   }
@@ -544,11 +616,14 @@ export function cancelMachine(machine: Machine): {
     throw new Error('Machine is already cancelled.');
   }
 
+  let refundUsdgUnits = 0n;
   let refundRfUnits = 0n;
   const refundFriends: RareFriendMetadata[] = [];
 
   for (const entry of machine.initialPrizes) {
-    if (entry.type === 'RF_PRIZE') {
+    if (entry.type === 'USDG_PRIZE') {
+      refundUsdgUnits += entry.amountUnits * BigInt(entry.initialQuantity);
+    } else if (entry.type === 'RF_PRIZE') {
       refundRfUnits += entry.amountUnits * BigInt(entry.initialQuantity);
     } else if (entry.type === 'FRIEND_PRIZE') {
       refundFriends.push({
@@ -557,7 +632,7 @@ export function cancelMachine(machine: Machine): {
         familyName: entry.familyName,
         generation: entry.generation,
         spriteRows: entry.spriteRows,
-        demoReferenceValueUnits: entry.referenceValueUnits,
+        demoUsdgValueUnits: entry.usdgValueUnits,
         origin: entry.origin,
         chainId: entry.chainId,
         contractAddress: entry.contractAddress,
@@ -589,9 +664,9 @@ export function cancelMachine(machine: Machine): {
       actorAddress: machine.creatorAddress,
       timestamp: now,
       machineType: machine.machineType,
-      details: `Machine "${machine.name}" cancelled. Refunded ${refundRfUnits / 1000n} RF and ${refundFriends.length} Rare Friends to creator.`,
+      details: `Machine "${machine.name}" cancelled. Refunded ${formatUsdgGrouped(refundUsdgUnits)}, ${formatRFGrouped(refundRfUnits)} and ${refundFriends.length} Rare Friends to creator.`,
     },
   ];
 
-  return { cancelledMachine, refundRfUnits, refundFriends, events };
+  return { cancelledMachine, refundUsdgUnits, refundRfUnits, refundFriends, events };
 }
