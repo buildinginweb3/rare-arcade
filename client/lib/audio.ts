@@ -63,7 +63,7 @@ class RetroAudioEngine {
   }
 
   /**
-   * RF Token drop into coin slot.
+   * USDG Token drop into coin slot.
    */
   public playInsertCoin() {
     const ctx = this.getContext();
@@ -210,7 +210,7 @@ class RetroAudioEngine {
   }
 
   /**
-   * RF prize won (cheerful rising arpeggio).
+   * USDG prize won (cheerful rising arpeggio).
    */
   public playPrizeWin() {
     const ctx = this.getContext();

@@ -489,7 +489,7 @@ h1, h2, h3, .pixel-title {
   image-rendering: pixelated;
 }
 
-/* RF reveal: coin rises 4-8px, 1-2px bounce. No smooth spin. */
+/* USDG reveal: coin rises 4-8px, 1-2px bounce. No smooth spin. */
 @keyframes rf-reveal-rise {
   0% { transform: translateY(8px); }
   60% { transform: translateY(-2px); }
@@ -502,7 +502,7 @@ h1, h2, h3, .pixel-title {
   position: relative;
 }
 
-/* $RF coin reveals carry NO shine overlay. Grey/white glint marks sat
+/* $USDG coin reveals carry NO shine overlay. Grey/white glint marks sat
    right against the coin's stepped silhouette and warm off-white face
    and made the token look speckled, so the reveal presents the coin
    clean. The former .rf-sparkle-* spans and the PixelShine overlay were
@@ -510,7 +510,7 @@ h1, h2, h3, .pixel-title {
    stages only. */
 
 /* Fee routing: the 5% platform fee splits in two — 75% settles at the
-   treasury, 25% travels onward to be swapped into RF and burned. */
+   treasury, 25% travels onward to be swapped into USDG and burned. */
 .fee-routes {
   display: inline-flex;
   gap: 3px;
@@ -1002,4 +1002,60 @@ html, body {
   font-family: var(--font-lcd);
   font-size: 9px;
   color: var(--color-gray-light);
+}
+
+/* ==========================================================================
+   BACKING TIER PICKER
+   The player chooses how much backing is at stake before pulling. Backing is
+   not a valuation — it is what the arcade pays out of its prize pool — so the
+   ladder is a stake selector, not a price list.
+   ========================================================================== */
+
+.tier-picker {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.tier-button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 8px;
+  border: var(--border-thin) solid var(--color-gray-mid);
+  background: transparent;
+  color: var(--color-gray-light);
+  cursor: pointer;
+  text-align: center;
+}
+
+.tier-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.tier-button-active {
+  border-color: var(--color-white);
+  background: var(--color-white);
+  color: var(--color-black);
+  box-shadow: var(--shadow-chunky);
+}
+
+.tier-name {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.tier-backing {
+  font-family: var(--font-lcd);
+  font-size: 8px;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+
+.prize-tier {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  font-family: var(--font-lcd);
+  font-size: 8px;
+  opacity: 0.75;
 }

@@ -1,13 +1,15 @@
 import { PIXEL } from './pixelPalette.ts';
 
-export type RfTokenIconProps = {
+export type TokenIconProps = {
   size?: number;
   className?: string;
+  /** Ticker drawn on the coin face, e.g. "USDG" or "RF". */
+  ticker?: string;
   title?: string;
   decorative?: boolean;
 };
 
-const GLYPHS = {
+const GLYPHS: Readonly<Record<string, readonly string[]>> = {
   "$": [
     "00100",
     "01111",
@@ -35,12 +37,48 @@ const GLYPHS = {
     "10000",
     "10000",
   ],
+  U: [
+    "10001",
+    "10001",
+    "10001",
+    "10001",
+    "10001",
+    "10001",
+    "01110",
+  ],
+  S: [
+    "01111",
+    "10000",
+    "10000",
+    "01110",
+    "00001",
+    "00001",
+    "11110",
+  ],
+  D: [
+    "11110",
+    "10001",
+    "10001",
+    "10001",
+    "10001",
+    "10001",
+    "11110",
+  ],
+  G: [
+    "01111",
+    "10000",
+    "10000",
+    "10111",
+    "10001",
+    "10001",
+    "01111",
+  ],
 } as const;
 
 /**
- * RARE ARCADE \u2014 canonical $RF / $RAREFRIENDS pixel token.
+ * RARE ARCADE \u2014 canonical pixel token coin.
  *
- * The single source of this artwork. Top Chase, normal RF prizes, the
+ * The single source of this artwork. Top Chase, normal USDG prizes, the
  * player and creator balances, burn visuals, and the prize reveal all
  * render THIS component, so the coin is identical everywhere and there
  * is no second or size-specific token asset.
@@ -59,23 +97,25 @@ const GLYPHS = {
  *   black stepped silhouette  -> the outer edge
  *   warm paper outer face     -> the rim band
  *   black inner rim           -> the recessed frame
- *   warm paper central face   -> the field the $RF sits on
- *   black $RF bitmap          -> the lettering
+ *   warm paper central face   -> the field the $USDG sits on
+ *   black $USDG bitmap          -> the lettering
  *
  * That is a clean, high-contrast monochrome pixel coin that stays
  * legible at 20px and still reads as a collectible object at 144px.
  *
  * Constraints: whole logical pixels only, no subpixel coordinates, no
- * gradients, filters, blur, or drop-shadows, and the $RF lettering is
+ * gradients, filters, blur, or drop-shadows, and the $USDG lettering is
  * always drawn last so nothing can cover it.
  */
-export function RfTokenIcon({
+export function TokenIcon({
   size = 64,
   className,
-  title = "$RAREFRIENDS",
+  ticker = "USDG",
+  title,
   decorative = false,
-}: RfTokenIconProps) {
-  const chars = ["$", "R", "F"] as const;
+}: TokenIconProps) {
+  // The leading $ is always on the face; the ticker follows it.
+  const chars = ["$", ...ticker.toUpperCase().split("")].filter((c) => c === "$" || c in GLYPHS);
 
   const pixel = 2;
   const glyphWidth = 5 * pixel;
@@ -94,18 +134,18 @@ export function RfTokenIcon({
       width={size}
       height={size}
       viewBox="0 0 64 64"
-      className={className ? `rf-token-icon ${className}` : "rf-token-icon"}
+      className={className ? `token-icon ${className}` : "token-icon"}
       xmlns="http://www.w3.org/2000/svg"
       shapeRendering="crispEdges"
       aria-hidden={decorative || undefined}
       role={decorative ? undefined : "img"}
-      aria-label={decorative ? undefined : title}
+      aria-label={decorative ? undefined : (title ?? `${ticker} token`)}
       style={{
         display: "block",
         imageRendering: "pixelated",
       }}
     >
-      {!decorative && <title>{title}</title>}
+      {!decorative && <title>{title ?? `${ticker} token`}</title>}
 
       {/* rear extrusion */}
       <path
@@ -147,9 +187,9 @@ export function RfTokenIcon({
         "
       />
 
-      {/* bitmap $RF */}
+      {/* bitmap ticker */}
       {chars.map((char, charIndex) => {
-        const bitmap = GLYPHS[char];
+        const bitmap = GLYPHS[char] ?? [];
 
         const offsetX =
           startX +
@@ -190,4 +230,4 @@ export function RfTokenIcon({
   );
 }
 
-export default RfTokenIcon;
+export default TokenIcon;

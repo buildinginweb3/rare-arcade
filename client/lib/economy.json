@@ -2,32 +2,37 @@
   "id": "rare-arcade",
   "title": "Rare Arcade",
   "version": "0.1.0",
-  "pullPrice": "10",
+  "currency": "USDG",
   "platformFeeBps": 500,
-  "cashback": {
-    "gross": "20",
-    "pays": "19"
-  },
-  "items": {
-    "genFriend": {
-      "name": "Generations Friend",
-      "description": "A Generations Rare Friend held in a cabinet, backed by 20 RF. Claim the backing for 19 RF, or keep the Friend.",
-      "backing": "20",
-      "redeemValue": "19"
+
+  "_comment_factors": "Each generation scales the two NFT rows; the weight it gives up goes to 'nothing'. Indexed 0 = generation 1. This is what makes RTP a function of the Friend you signed in with, and it cannot make the tables disagree about summing to 10000.",
+  "generationFactors": [1, 0.985, 0.97, 0.955, 0.94, 0.925],
+
+  "_comment_tiers": "A tier is a backing level the player chooses when they pull, not a valuation. Backing is what the arcade is willing to pay out of its prize pool, so it needs no price oracle and makes no claim about what an NFT is worth. Genesis is backed at 4x a Generations Friend of the same tier: that multiple is a game-design constant chosen for rarity, not a market estimate.",
+  "tiers": {
+    "starter": {
+      "label": "STARTER",
+      "price": "5",
+      "cashback": { "gross": "1", "pays": "0.95" },
+      "genBacking": "20",
+      "genesisBacking": "80",
+      "base": { "nothing": 3850, "cashback": 4200, "genFriend": 1850, "genesisFriend": 100 }
     },
-    "genesisFriend": {
-      "name": "Genesis Friend",
-      "description": "A Genesis Rare Friend held in a cabinet, backed by 100 RF. Claim the backing for 95 RF, or keep the Friend.",
-      "backing": "100",
-      "redeemValue": "95"
+    "classic": {
+      "label": "CLASSIC",
+      "price": "25",
+      "cashback": { "gross": "5", "pays": "4.75" },
+      "genBacking": "100",
+      "genesisBacking": "400",
+      "base": { "nothing": 5900, "cashback": 3000, "genFriend": 700, "genesisFriend": 400 }
+    },
+    "grand": {
+      "label": "GRAND",
+      "price": "125",
+      "cashback": { "gross": "25", "pays": "23.75" },
+      "genBacking": "500",
+      "genesisBacking": "2000",
+      "base": { "nothing": 6850, "cashback": 2000, "genFriend": 750, "genesisFriend": 400 }
     }
-  },
-  "perGeneration": {
-    "1": { "nothing": 6200, "cashback": 3000, "genFriend": 500, "genesisFriend": 300 },
-    "2": { "nothing": 6230, "cashback": 3000, "genFriend": 480, "genesisFriend": 290 },
-    "3": { "nothing": 6260, "cashback": 3000, "genFriend": 460, "genesisFriend": 280 },
-    "4": { "nothing": 6290, "cashback": 3000, "genFriend": 440, "genesisFriend": 270 },
-    "5": { "nothing": 6320, "cashback": 3000, "genFriend": 420, "genesisFriend": 260 },
-    "6": { "nothing": 6350, "cashback": 3000, "genFriend": 400, "genesisFriend": 250 }
   }
 }

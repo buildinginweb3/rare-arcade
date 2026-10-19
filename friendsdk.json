@@ -4,147 +4,417 @@
   "version": "0.1.0",
   "client": "client/main.tsx",
   "server": "server/index.ts",
-  "currency": "RF",
+  "currency": "USDG",
   "display": {
     "minAspectRatio": "9:16",
     "maxAspectRatio": "21:9"
   },
   "items": {
-    "genFriend": {
+    "genFriend20": {
       "name": "Generations Friend",
-      "description": "A Generations Rare Friend held in a cabinet, backed by 20 RF. Claim the backing for 19 RF, or keep the Friend.",
+      "description": "A Generations Rare Friend won from the STARTER cabinet, backed by 20 USDG. Keep it, or claim 19 USDG — the arcade keeps 5%.",
       "redeemValue": "19"
     },
-    "genesisFriend": {
+    "genesisFriend80": {
       "name": "Genesis Friend",
-      "description": "A Genesis Rare Friend held in a cabinet, backed by 100 RF. Claim the backing for 95 RF, or keep the Friend.",
+      "description": "A Genesis Rare Friend won from the STARTER cabinet, backed by 80 USDG. Keep it, or claim 76 USDG — the arcade keeps 5%.",
+      "redeemValue": "76"
+    },
+    "genFriend100": {
+      "name": "Generations Friend",
+      "description": "A Generations Rare Friend won from the CLASSIC cabinet, backed by 100 USDG. Keep it, or claim 95 USDG — the arcade keeps 5%.",
       "redeemValue": "95"
+    },
+    "genesisFriend400": {
+      "name": "Genesis Friend",
+      "description": "A Genesis Rare Friend won from the CLASSIC cabinet, backed by 400 USDG. Keep it, or claim 380 USDG — the arcade keeps 5%.",
+      "redeemValue": "380"
+    },
+    "genFriend500": {
+      "name": "Generations Friend",
+      "description": "A Generations Rare Friend won from the GRAND cabinet, backed by 500 USDG. Keep it, or claim 475 USDG — the arcade keeps 5%.",
+      "redeemValue": "475"
+    },
+    "genesisFriend2000": {
+      "name": "Genesis Friend",
+      "description": "A Genesis Rare Friend won from the GRAND cabinet, backed by 2000 USDG. Keep it, or claim 1900 USDG — the arcade keeps 5%.",
+      "redeemValue": "1900"
     }
   },
   "actions": {
-    "pull": {
+    "pullStarter": {
       "type": "draw",
-      "label": "Pull the lever",
-      "description": "One pull of a Rare Arcade cabinet. Costs 10 RF. The arcade takes a 5% platform fee from your spend, from every cashback win, and from any backing you claim.",
-      "price": "10",
+      "label": "Pull the STARTER cabinet",
+      "description": "One pull for 5 USDG. A Rare Friend from this cabinet is backed by 20–80 USDG. The arcade takes 5% of your spend, of every cashback win, and of any backing you claim.",
+      "price": "5",
       "maxQuantity": 1,
       "perGeneration": {
         "1": [
           {
-            "weight": 6200
+            "weight": 3850
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 500,
-            "item": "genFriend"
+            "weight": 1850,
+            "item": "genFriend20"
           },
           {
-            "weight": 300,
-            "item": "genesisFriend"
+            "weight": 100,
+            "item": "genesisFriend80"
           }
         ],
         "2": [
           {
-            "weight": 6230
+            "weight": 3879
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 480,
-            "item": "genFriend"
+            "weight": 1822,
+            "item": "genFriend20"
           },
           {
-            "weight": 290,
-            "item": "genesisFriend"
+            "weight": 99,
+            "item": "genesisFriend80"
           }
         ],
         "3": [
           {
-            "weight": 6260
+            "weight": 3908
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 460,
-            "item": "genFriend"
+            "weight": 1795,
+            "item": "genFriend20"
           },
           {
-            "weight": 280,
-            "item": "genesisFriend"
+            "weight": 97,
+            "item": "genesisFriend80"
           }
         ],
         "4": [
           {
-            "weight": 6290
+            "weight": 3938
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 440,
-            "item": "genFriend"
+            "weight": 1767,
+            "item": "genFriend20"
           },
           {
-            "weight": 270,
-            "item": "genesisFriend"
+            "weight": 95,
+            "item": "genesisFriend80"
           }
         ],
         "5": [
           {
-            "weight": 6320
+            "weight": 3967
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 420,
-            "item": "genFriend"
+            "weight": 1739,
+            "item": "genFriend20"
           },
           {
-            "weight": 260,
-            "item": "genesisFriend"
+            "weight": 94,
+            "item": "genesisFriend80"
           }
         ],
         "6": [
           {
-            "weight": 6350
+            "weight": 3996
           },
           {
-            "weight": 3000,
-            "pays": "19"
+            "weight": 4200,
+            "pays": "0.95"
           },
           {
-            "weight": 400,
-            "item": "genFriend"
+            "weight": 1711,
+            "item": "genFriend20"
           },
           {
-            "weight": 250,
-            "item": "genesisFriend"
+            "weight": 93,
+            "item": "genesisFriend80"
           }
         ]
       }
     },
-    "claimGenFriend": {
+    "pullClassic": {
+      "type": "draw",
+      "label": "Pull the CLASSIC cabinet",
+      "description": "One pull for 25 USDG. A Rare Friend from this cabinet is backed by 100–400 USDG. The arcade takes 5% of your spend, of every cashback win, and of any backing you claim.",
+      "price": "25",
+      "maxQuantity": 1,
+      "perGeneration": {
+        "1": [
+          {
+            "weight": 5900
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 700,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 400,
+            "item": "genesisFriend400"
+          }
+        ],
+        "2": [
+          {
+            "weight": 5916
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 690,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 394,
+            "item": "genesisFriend400"
+          }
+        ],
+        "3": [
+          {
+            "weight": 5933
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 679,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 388,
+            "item": "genesisFriend400"
+          }
+        ],
+        "4": [
+          {
+            "weight": 5949
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 669,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 382,
+            "item": "genesisFriend400"
+          }
+        ],
+        "5": [
+          {
+            "weight": 5966
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 658,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 376,
+            "item": "genesisFriend400"
+          }
+        ],
+        "6": [
+          {
+            "weight": 5982
+          },
+          {
+            "weight": 3000,
+            "pays": "4.75"
+          },
+          {
+            "weight": 648,
+            "item": "genFriend100"
+          },
+          {
+            "weight": 370,
+            "item": "genesisFriend400"
+          }
+        ]
+      }
+    },
+    "pullGrand": {
+      "type": "draw",
+      "label": "Pull the GRAND cabinet",
+      "description": "One pull for 125 USDG. A Rare Friend from this cabinet is backed by 500–2000 USDG. The arcade takes 5% of your spend, of every cashback win, and of any backing you claim.",
+      "price": "125",
+      "maxQuantity": 1,
+      "perGeneration": {
+        "1": [
+          {
+            "weight": 6850
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 750,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 400,
+            "item": "genesisFriend2000"
+          }
+        ],
+        "2": [
+          {
+            "weight": 6867
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 739,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 394,
+            "item": "genesisFriend2000"
+          }
+        ],
+        "3": [
+          {
+            "weight": 6884
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 728,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 388,
+            "item": "genesisFriend2000"
+          }
+        ],
+        "4": [
+          {
+            "weight": 6902
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 716,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 382,
+            "item": "genesisFriend2000"
+          }
+        ],
+        "5": [
+          {
+            "weight": 6919
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 705,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 376,
+            "item": "genesisFriend2000"
+          }
+        ],
+        "6": [
+          {
+            "weight": 6936
+          },
+          {
+            "weight": 2000,
+            "pays": "23.75"
+          },
+          {
+            "weight": 694,
+            "item": "genFriend500"
+          },
+          {
+            "weight": 370,
+            "item": "genesisFriend2000"
+          }
+        ]
+      }
+    },
+    "claimGenFriend20": {
       "type": "redeem",
       "label": "Claim the backing",
-      "description": "Burn a Generations Friend and receive 19 RF — 95% of the 20 RF that backed it. The arcade keeps 5%.",
-      "redeems": "genFriend",
+      "description": "Burn a Generations Friend and receive 19 USDG — 95% of the 20 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genFriend20",
       "maxQuantity": 1
     },
-    "claimGenesisFriend": {
+    "claimGenesisFriend80": {
       "type": "redeem",
       "label": "Claim the backing",
-      "description": "Burn a Genesis Friend and receive 95 RF — 95% of the 100 RF that backed it. The arcade keeps 5%.",
-      "redeems": "genesisFriend",
+      "description": "Burn a Genesis Friend and receive 76 USDG — 95% of the 80 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genesisFriend80",
+      "maxQuantity": 1
+    },
+    "claimGenFriend100": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Generations Friend and receive 95 USDG — 95% of the 100 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genFriend100",
+      "maxQuantity": 1
+    },
+    "claimGenesisFriend400": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Genesis Friend and receive 380 USDG — 95% of the 400 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genesisFriend400",
+      "maxQuantity": 1
+    },
+    "claimGenFriend500": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Generations Friend and receive 475 USDG — 95% of the 500 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genFriend500",
+      "maxQuantity": 1
+    },
+    "claimGenesisFriend2000": {
+      "type": "redeem",
+      "label": "Claim the backing",
+      "description": "Burn a Genesis Friend and receive 1900 USDG — 95% of the 2000 USDG that backed it. The arcade keeps 5%.",
+      "redeems": "genesisFriend2000",
       "maxQuantity": 1
     }
   },

@@ -53,7 +53,7 @@ export const PixelIcon: React.FC<PixelIconProps> = ({
   const renderPaths = () => {
     switch (name) {
       case 'rf':
-        // Hexagonal coin with "RF" monogram
+        // Hexagonal coin with "USDG" monogram
         return (
           <>
             <rect x="4" y="1" width="8" height="1" fill={color} />

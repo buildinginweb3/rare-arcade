@@ -21,7 +21,7 @@ createRoot(root).render(
       loading="Warming up the cabinet…"
       closed="This session ended. Pick a Friend to play again."
       check={(game) => {
-        if (!game.currency) throw new Error("This cabinet plays in RF.");
+        if (!game.currency) throw new Error("This cabinet plays in USDG.");
       }}
     >
       {(ready: Ready<Cabinet>, paused: boolean) => <Arcade ready={ready} paused={paused} />}

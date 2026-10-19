@@ -2,7 +2,7 @@
  * pixelPalette.ts
  *
  * The Rare Arcade warm-monochrome pixel-art palette, shared by the
- * code-drawn pixel components (the $RF token, its surface shine, and
+ * code-drawn pixel components (the $USDG token, its surface shine, and
  * the pull-FX pixel stages) so those components cannot drift apart.
  *
  * This is deliberately NOT the same as the CSS UI palette
