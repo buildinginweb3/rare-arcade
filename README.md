@@ -1,91 +1,98 @@
 # RARE ARCADE
 
-A FriendSDK 1.0 game for the Rare Friends arcade.
+A creator-owned prize-machine marketplace for Rare Friends.
 
-Pull a cabinet for **USDG**. Every pull is settled on chain from platform
-randomness, so the outcome is fixed before your transaction is sent and cannot
-be chosen, replayed or read ahead of time by the browser.
+Anyone can open a cabinet, stock it with Rare Friends and USDG, set a pull
+price and a finite deck, and put it on the floor. Players pull one ticket at a
+time. A ticket can carry a Rare Friend, a USDG prize, or nothing. The creator
+keeps **95%** of every pull; the platform keeps **5%**.
 
-Win a **Rare Friend** and it is held by your Friend's wallet, backed by USDG you
-can claim — or you can keep the Friend and never touch the backing. Your
-choice, and the odds are published before you pull.
-
----
-
-## The cabinets
-
-| | STARTER | CLASSIC | GRAND |
-|---|---|---|---|
-| Pull price | 5 USDG | 25 USDG | 125 USDG |
-| Cashback gross | 1 USDG | 5 USDG | 25 USDG |
-| Cashback pays | 0.95 USDG | 4.75 USDG | 23.75 USDG |
-| Generations Friend backing | 20 USDG | 100 USDG | 500 USDG |
-| Generations Friend claim | 19 USDG | 95 USDG | 475 USDG |
-| Genesis Friend backing | 80 USDG | 400 USDG | 2,000 USDG |
-| Genesis Friend claim | 76 USDG | 380 USDG | 1,900 USDG |
-
-**Outcomes per pull**
-
-| Outcome | What you get |
-|---|---|
-| No prize | Nothing. The most common result. |
-| Cashback | The tier's cashback, less the 5% fee. |
-| Generations Friend | A Rare Friend backed by the tier's backing — keep it, or claim 95% of it. |
-| Genesis Friend | A Genesis Rare Friend backed by 4× the Generations backing — keep it, or claim 95% of it. |
-
-**The 5% fee** is charged on your spend, on a cashback win, and on backing you
-choose to claim. Tokens you put in a cabinet need no backing — they pay
-themselves.
-
-**RTP is a function of your Friend's generation.** Generation 1 is the rarest
-Friend and plays the best table; generation 6 the worst. Your odds are fixed
-before you play, not before you pull.
-
-| Generation | STARTER | CLASSIC | GRAND |
-|---|---|---|---|
-| 1 | 93.48% | 93.10% | 93.10% |
-| 2 | 92.26% | 91.80% | 91.77% |
-| 3 | 90.93% | 90.47% | 90.44% |
-| 4 | 89.56% | 89.18% | 89.07% |
-| 5 | 88.35% | 87.85% | 87.74% |
-| 6 | 87.13% | 86.56% | 86.41% |
-
-### Backing is a payout, not a valuation
-
-The arcade does not price Rare Friends. "Backed by 20 USDG" means the arcade
-will pay 20 USDG out of its prize pool for that Friend — a published payout,
-fixed before the pull. It is not an estimate of what a Friend is worth, and the
-game needs no oracle to make the promise.
-
-The ladder is fixed because a manifest `redeemValue` is a constant. A genuinely
-player-set backing amount cannot be expressed by a `draw` and `redeem` action; it
-would need an `external` lane and a contract Rare Friends write. The three
-cabinets are the backing choice this version can honestly offer.
+A Friend won from a machine goes to the winner's Friend wallet. The winner can
+keep it, or burn it and take the USDG backing its creator attached. Claims pay
+the full backing — the 5% fee is charged on pulls, not on cash-outs.
 
 ---
 
-## One source of truth for the economy
+## Open a machine
 
-`client/lib/economy.json` holds every number: the pull prices, the fee, the
-per-generation weights, the backing and what a claim pays.
+The create wizard is the whole marketplace:
 
-```
-client/lib/economy.json  ──►  scripts/gen-manifest.mjs  ──►  friendsdk.json
-        │                                                        │
-        │ (imported by the client)                               │ (settled on chain)
-        ▼                                                        ▼
-   odds the arcade publishes                            what the keeper pays out
-```
+- **Stock Rare Friends.** Pick Friends from your wallet, choose the USDG backing
+  for each one, and the contract holds both until they are won.
+- **Add USDG prize lines.** Any amount and any number of copies, so a deck can
+  have a few large prizes or many small ones.
+- **Set the price and the deck.** Pull price from 0.1 to 1,000 USDG; 2 to 1,000
+  tickets. Prizes occupy tickets in a shuffled finite deck; every ticket is
+  drawn exactly once.
+- **Pick a cabinet.** CLASSIC, CAPSULE, TALLBOY or MINI.
+- **Publish the odds.** The wizard shows the floor RTP before the machine opens.
+  It must sit between 70% and 105%.
 
-The generator refuses to write a manifest whose weights do not sum to 10000 or
-whose RTP falls outside 70–105%, and it prints the RTP of every generation table
-as it goes. What the cabinet shows and what the chain settles cannot drift apart,
-because there is only one file.
+Limits: up to 16 Friends and 8 USDG lines per machine, 20 copies per USDG line,
+100,000 USDG of total stocked value, 12 active machines per creator and 120 on
+the floor.
 
-```sh
-npm run manifest         # regenerate friendsdk.json
-npm run manifest:check   # fail if friendsdk.json is stale (run in CI)
-```
+A creator can pause and resume a machine, collect its receipts at any time, or
+cancel it **before the first pull** to get the remaining USDG and the stocked
+Friends back. After the first pull the deck belongs to the players.
+
+---
+
+## Play
+
+1. Choose a machine on the floor.
+2. Check its price, tickets left, prize pool, top backing and published RTP.
+3. Pull. Your payment is the pull price; 95% becomes creator receipts and 5% is
+   the platform fee.
+4. If the ticket carries a Friend, it is yours. Keep it, or open **Claims** and
+   take its backing. The backing is paid in full and the Friend is burned.
+5. If the ticket carries USDG, it is paid to you immediately.
+
+The game server mirrors what the contract reports so the floor, a machine's
+stock, creator totals and leaderboards survive a reload. It never decides an
+outcome and never holds money.
+
+---
+
+## Why this is an external lane
+
+A manifest `draw`/`redeem` cabinet has a constant price, a constant
+`redeemValue` and a fixed table. That cannot express a marketplace where each
+creator chooses their own price, backing, ticket count and arbitrary USDG
+prizes, and where a winner may keep an NFT instead of redeeming it.
+
+Rare Arcade therefore declares one **external** lane, `arcade`, with seven
+actions:
+
+| Action | What it does |
+| --- | --- |
+| `createMachine` | Escrow the stock, open the deck and list the machine |
+| `pull` | Charge the price, reveal one ticket and pay its prize |
+| `claimBacking` | Burn the won Friend and pay its backing |
+| `withdrawMachine` | Pay the creator's 95% receipts |
+| `pauseMachine` | Stop new pulls without emptying the machine |
+| `resumeMachine` | Put a paused machine back on the floor |
+| `cancelMachine` | Before the first pull, refund the stock |
+
+`friendsdk build` correctly reports no SDK-deployed modules
+(`lanes: []`, `deployedModulesSuffice: true`) because this game needs a
+contract the SDK does not deploy. That is not the same as needing no contract.
+
+### Production requirement
+
+The source in this repository is complete, but it cannot custody real funds or
+Rare Friends by itself. Before mainnet, **Rare Friends must author and deploy**:
+
+- the escrow contract that holds NFT custody and the USDG prize pool, enforces
+  the finite deck, pays backing on burn, splits every pull 95/5, and implements
+  cancel/refund;
+- the adapter that turns those calls into the seven lane actions; and
+- the keeper watcher that reports `pending`/`settled`/`failed` events back to
+  the game server.
+
+`dev/arcade-stub.ts` is the executable specification of those requirements and
+runs the full flow locally. Until the contract and adapter exist, this build is
+a dev game, not a place to send real funds.
 
 ---
 
@@ -95,73 +102,54 @@ Requires **Node.js 22 or later**.
 
 ```sh
 npm install
-npm run dev        # simulated website, chain, keeper and server on :4173
+npm run dev        # website, simulated chain, keeper and server on :4173
 ```
 
-`friendsdk dev` mounts the game exactly as the website does, with fixture
-Friends, a simulated Robinhood Chain and a local keeper. Every pull, claim and
-settlement works without a wallet, an account or a deployed contract. The dev
-panel can hold randomness, take the keeper offline, force a draw row and set the
-prize pool, so the failure paths are reachable without deploying anything.
+The dev host signs in fixture Friends with `FRIENDSDK_DEV_AUTH`, grants four
+demo Friends per wallet, and runs the arcade stub. Every create, pause, pull,
+claim, withdrawal and cancel works without a wallet, an account or a deployed
+contract.
 
 ```sh
 npm run check      # manifest + code validation, then a full typecheck
-npm run build      # regenerate the manifest and write .friendsdk/build
+npm run build      # write .friendsdk/build and the contract request
 ```
+
+`npm run check` runs `friendsdk check` and `tsc --noEmit`. The build output is
+`.friendsdk/build/client/` plus `server.js`, `manifest.json` and
+`contract-request.json` for the platform.
 
 ---
 
-## What is in the box
+## Source map
 
 ```
-friendsdk.json                  the economy, generated — do not hand-edit
+shared/arcade.ts              machine model, limits, money maths, deck quote
+friendsdk.json                external lane, actions, items, leaderboards
 client/
-  main.tsx                      entry: FriendSession, fonts, stylesheet
-  screens/Arcade.tsx            the cabinets, the reveal, the prize panel
-  lib/economy.json              the single source of truth
-  lib/economy.ts                typed accessors and derived odds/RTP
-  arcade/PixelPullFx.tsx        the pull ritual (drum, capsule, claw, reels)
-  ui/FriendSprite.tsx           the Friend, drawn from its on-chain artwork
+  main.tsx                    FriendSession, fonts, stylesheet
+  screens/Arcade.tsx          floor, machine view, create wizard, claims
+  arcade/PixelPullFx.tsx      the pull ritual for all four cabinets
+  ui/                         pixel icons, tokens and Friend artwork
+  lib/arcade.css              the marketplace skin
 server/
-  index.ts                      pull count and the leaderboard
-scripts/gen-manifest.mjs        economy.json -> friendsdk.json
+  index.ts                    mirrored catalogue, leaderboards, pull accounting
+dev/
+  arcade-stub.ts              dev escrow contract, relay and watcher
 ```
 
-The server rules deliberately hold **no** economy. Odds, RTP and backing live in
-`economy.json`; server state is only the arcade's record of how many pulls a
-Friend has made. A second copy of the economy on the server is a second copy
-that can be wrong.
+`shared/arcade.ts` is the single source of truth for machine shape, limits,
+fees and RTP. The client renders it, the server mirrors it, and the dev stub
+settles it, so the published odds and the paid odds cannot drift.
 
 ### Art
 
-All Rare Arcade pixel artwork is original to this project and drawn in code as
-SVG: the pull rituals, the `$USDG` coin, the 16×16 icon set and the pixel palette
-in `client/ui/pixelPalette.ts`. The Friend itself is not drawn by this game — it
-is the player's own on-chain artwork, decoded from the 64 frames the platform
-supplies.
-
-Fonts are Press Start 2P and Silkscreen (SIL Open Font License), bundled from
-`@fontsource` rather than loaded from a font CDN, because the arcade's Content
-Security Policy allows assets from the game origin only. Every sound effect is
-synthesised at runtime with the Web Audio API; no audio files are shipped.
-
----
-
-## Open question for Rare Friends
-
-**Does a Friend that has been activated on rarefriends.com stay activated if it
-is won in a cabinet?**
-
-In this build the answer is not ours to give. A cabinet prize is a FriendSDK
-item bound to the Friend wallet, minted by the draw and redeemable for its
-backing. This game never holds, transfers or deactivates a Rare Friends NFT: it
-only mints and burns an in-game item. If activation is a property of the original
-NFT, nothing here can affect it — but nothing here can confirm it either, because
-the game has no chain access of its own.
-
-If the answer turns out to be no, the fix is an `external` lane whose contract
-Rare Friends write, which would enforce it on the way out of the cabinet. That is
-not in this version.
+All Rare Arcade pixel artwork is original and drawn in code as SVG: the four
+cabinet shells, the pull rituals, the `$USDG` coin, the 16×16 icon set and the
+pixel palette. The Friend itself is the player's own on-chain artwork, supplied
+by the platform. Fonts are Press Start 2P and Silkscreen (SIL Open Font
+License), bundled from `@fontsource`; every sound is synthesised with the Web
+Audio API. No CDN, remote image or audio file is used.
 
 ---
 

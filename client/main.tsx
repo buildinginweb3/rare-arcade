@@ -8,23 +8,23 @@ import "@fontsource/silkscreen/latin-700.css";
 import "./lib/arcade.css";
 
 import { Arcade } from "./screens/Arcade.tsx";
-
-type Cabinet = Readonly<{ pulls: number; genesisWon: number; generationsWon: number }>;
+import type { Snapshot } from "../shared/arcade.ts";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Rare Arcade: no #root to mount into.");
 
 createRoot(root).render(
   <React.StrictMode>
-    <FriendSession<Cabinet>
+    <FriendSession<Snapshot>
       title="Rare Arcade"
-      loading="Warming up the cabinet…"
+      loading="Warming up the arcade…"
       closed="This session ended. Pick a Friend to play again."
       check={(game) => {
-        if (!game.currency) throw new Error("This cabinet plays in USDG.");
+        if (!game.currency) throw new Error("Rare Arcade plays in USDG.");
+        if (game.currency.symbol !== "USDG") throw new Error(`Rare Arcade plays in USDG, not ${game.currency.symbol}.`);
       }}
     >
-      {(ready: Ready<Cabinet>, paused: boolean) => <Arcade ready={ready} paused={paused} />}
+      {(ready: Ready<Snapshot>, paused: boolean) => <Arcade ready={ready} paused={paused} />}
     </FriendSession>
   </React.StrictMode>
 );

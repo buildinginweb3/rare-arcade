@@ -1,400 +1,1171 @@
 import React from "react";
-import { messageOf, type Paid, type Ready, usePayments } from "@rarefriends/friendsdk/react";
-import type { TransactionResult } from "@rarefriends/friendsdk";
+import {
+  isCancelled,
+  messageOf,
+  usePayments,
+  type Paid,
+  type Ready,
+} from "@rarefriends/friendsdk/react";
+import type { Holdings, TransactionResult } from "@rarefriends/friendsdk";
 import { PixelIcon } from "../ui/PixelIcon.tsx";
 import { TokenIcon } from "../ui/TokenIcon.tsx";
 import { FriendSprite } from "../ui/FriendSprite.tsx";
 import { PixelPullFx, type PullFxResultKind } from "../arcade/PixelPullFx.tsx";
 import { PlatformFeeVisual } from "../arcade/PlatformFeeVisual.tsx";
+import { soundFx } from "../lib/audio.ts";
 import {
   CURRENCY,
-  DECIMALS,
-  ITEM_IDS,
-  PLATFORM_FEE_BPS,
-  TIER_KEYS,
-  TIERS,
-  claimActionFor,
-  itemOf,
-  money,
-  moneyExact,
-  oddsFor,
-  parseAmount,
-  percentOf,
-  platformFeeOf,
-  pullActionFor,
-  rtpBpsFor,
-  type Generation,
+  ITEM_NAMES,
+  MAX_BACKING,
+  MAX_FUNDING,
+  MAX_PRICE,
+  MAX_PRIZE_COPIES,
+  MAX_RTP_BPS,
+  MAX_TICKETS,
+  MIN_BACKING,
+  MIN_PRICE,
+  MIN_RTP_BPS,
+  MIN_TICKETS,
+  NAME_PATTERN,
+  SHELLS,
+  STATUS_LABEL,
+  displayUnits,
+  groupAmount,
+  parseUnits,
+  quoteDraft,
+  summarizeMachine,
+  type ArcadeEventData,
+  type Claim,
+  type Draft,
+  type DraftQuote,
   type ItemId,
-  type OddsRow,
-  type TierKey,
-} from "../lib/economy.ts";
-import { soundFx } from "../lib/audio.ts";
+  type MachineDetail,
+  type MachineSummary,
+  type RecentWin,
+  type Snapshot,
+  type TopEntry,
+} from "../../shared/arcade.ts";
 
-type Cabinet = Readonly<{ pulls: number; genesisWon: number; generationsWon: number }>;
+type View =
+  | Readonly<{ kind: "floor" }>
+  | Readonly<{ kind: "machine"; id: string }>
+  | Readonly<{ kind: "create" }>
+  | Readonly<{ kind: "claims" }>;
 
-const FALLBACK_CABINET: Cabinet = { pulls: 0, genesisWon: 0, generationsWon: 0 };
+type Reveal = Readonly<{
+  runId: number;
+  kind: PullFxResultKind;
+  data: ArcadeEventData & { machineId: string };
+}>;
 
-type Reveal = { runId: number; tier: TierKey; row: OddsRow; paid: bigint };
+type SelectInput = Readonly<{ machineId?: string; tokenId?: string }>;
 
-/** Map a settled draw onto the published table for the tier and generation. */
-function toReveal(result: TransactionResult, tier: TierKey, generation: Generation, runId: number): Reveal | null {
-  const outcome = result.outcomes?.[0];
-  if (!outcome) return null;
-  const row = oddsFor(tier, generation)[outcome.row];
-  if (!row) return null;
-  return { runId, tier, row, paid: parseAmount(outcome.pays ?? "0", DECIMALS) };
+const DEFAULT_DRAFT: Draft = {
+  name: "",
+  shell: "classic",
+  price: "1",
+  ticketCount: 10,
+  nftPrizes: [],
+  usdgPrizes: [],
+};
+
+function draftOf(quote: DraftQuote | null): Draft {
+  if (!quote) return DEFAULT_DRAFT;
+  return {
+    name: quote.name,
+    shell: quote.shell,
+    price: quote.price,
+    ticketCount: quote.ticketCount,
+    nftPrizes: quote.nftPrizes,
+    usdgPrizes: quote.usdgPrizes,
+  };
 }
 
-/** The Genesis item a tier can pay out, which is its top prize. */
-const topPrizeOf = (tier: TierKey, generation: Generation): ItemId | undefined =>
-  oddsFor(tier, generation).find((row) => row.item && itemOf(row.item).rarity === "genesisFriend")?.item;
+function itemName(item: ItemId): string {
+  return ITEM_NAMES[item];
+}
 
-export function Arcade({ ready, paused }: { ready: Ready<Cabinet>; paused: boolean }) {
-  const { game, holdings } = ready;
-  const cabinet = (ready.server as Cabinet | null) ?? FALLBACK_CABINET;
+function scoreAmount(score: number): string {
+  return displayUnits(BigInt(Math.round(score)));
+}
 
-  const decimals = game.currency?.decimals ?? 6;
-  const generation = (game.friend.generation ?? 3) as Generation;
-  const balance = holdings.currency ? parseAmount(holdings.currency.balance, decimals) : 0n;
-
-  const [tier, setTier] = React.useState<TierKey>("starter");
-  const [reveal, setReveal] = React.useState<Reveal | null>(null);
-  const [phase, setPhase] = React.useState<"IDLE" | "PULLING" | "REVEALED">("IDLE");
-  const [pending, setPending] = React.useState(0);
+export function Arcade({ ready, paused }: { ready: Ready<Snapshot>; paused: boolean }) {
+  const { game } = ready;
+  const [snapshot, setSnapshot] = React.useState<Snapshot>(ready.server);
+  const [holdings, setHoldings] = React.useState<Holdings>(ready.holdings);
+  const [view, setView] = React.useState<View>({ kind: "floor" });
+  const [detail, setDetail] = React.useState<MachineDetail | null>(null);
+  const [detailError, setDetailError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
-  const [oddsOpen, setOddsOpen] = React.useState(false);
+  const [pending, setPending] = React.useState(0);
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const [phase, setPhase] = React.useState<"IDLE" | "PULLING" | "REVEALED">("IDLE");
+  const [reveal, setReveal] = React.useState<Reveal | null>(null);
+  const [refreshKey, setRefreshKey] = React.useState(0);
   const runId = React.useRef(0);
+  const presented = React.useRef(new Set<string>());
+  const selectedId = view.kind === "machine" ? view.id : null;
 
-  // A settlement that arrives after `transact` returned pending is played here
-  // rather than dropped. The tier comes from the action name, because the table
-  // that says how to read the row is the one the player chose.
-  const showSettled = React.useCallback(
-    (result: TransactionResult) => {
-      if (result.status !== "settled") return;
-      const settled = TIER_KEYS.find((key) => pullActionFor(key) === result.action);
-      if (!settled) return;
-      const next = toReveal(result, settled, generation, ++runId.current);
-      if (next) {
-        setReveal(next);
+  const refresh = React.useCallback(async () => {
+    try {
+      const [next, nextHoldings] = await Promise.all([game.call<Snapshot>("catalog"), game.holdings()]);
+      setSnapshot(next);
+      setHoldings(nextHoldings);
+      setRefreshKey((key) => key + 1);
+    } catch (error) {
+      setNotice(messageOf(error, "The arcade could not refresh."));
+    }
+  }, [game]);
+
+  React.useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      setDetailError(null);
+      return;
+    }
+    let live = true;
+    setDetailError(null);
+    game
+      .call<MachineDetail>("machine", { id: selectedId })
+      .then((next) => {
+        if (live) setDetail(next);
+      })
+      .catch((error) => {
+        if (live) setDetailError(messageOf(error, "That machine could not be opened."));
+      });
+    return () => {
+      live = false;
+    };
+  }, [game, selectedId, refreshKey]);
+
+  const present = React.useCallback(
+    (transaction: TransactionResult) => {
+      if (transaction.status !== "settled") return;
+      if (presented.current.has(transaction.id)) return;
+      presented.current.add(transaction.id);
+      const data = transaction.data as ArcadeEventData | undefined;
+      if (transaction.action === "pull" && data?.result && data.machineId) {
+        const kind: PullFxResultKind = data.result === "nft" ? "nft" : data.result === "usdg" ? "rf" : "empty";
+        setReveal({ runId: ++runId.current, kind, data: data as ArcadeEventData & { machineId: string } });
         setPhase("PULLING");
       }
+      if (transaction.action === "createMachine" && data?.machineId) {
+        const id = data.machineId;
+        setNotice("Machine opened.");
+        void refresh().then(() => setView({ kind: "machine", id }));
+      }
+      if (transaction.action === "claimBacking") setNotice("Backing claimed. The Friend was burned.");
+      if (transaction.action === "withdrawMachine") setNotice("Creator receipts collected.");
+      if (transaction.action === "pauseMachine") setNotice("Machine paused.");
+      if (transaction.action === "resumeMachine") setNotice("Machine is taking pulls again.");
+      if (transaction.action === "cancelMachine") setNotice("Machine cancelled. Everything was returned.");
     },
-    [generation]
+    [refresh]
   );
 
   const { pay } = usePayments(game, {
+    changed: () => undefined,
     pending: setPending,
-    settled: (results) => results.forEach(showSettled),
+    settled: (results) => {
+      for (const result of results) present(result);
+      void refresh();
+    },
     failed: (result) => {
-      setNotice(result.error ?? "That pull could not be settled.");
+      setNotice(result.error ?? "That transaction failed.");
       setPhase("IDLE");
     },
-    refresh: async () => undefined,
-    busy: () => phase === "PULLING",
+    refresh,
+    busy: () => phase === "PULLING" || busy !== null,
   });
 
-  const action = pullActionFor(tier);
-  const info = game.actions[action];
-  const available = holdings.actions[action]?.available ?? false;
-  const canPull = info?.enabled === true && phase === "IDLE" && !paused && pending === 0 && available;
+  const act = React.useCallback(
+    async (action: string, select?: SelectInput): Promise<Paid | null> => {
+      if (paused || pending > 0 || busy !== null) return null;
+      setBusy(action);
+      setNotice(null);
+      try {
+        if (select) await game.call("select", select);
+        soundFx.playInsertCoin();
+        const paid = await pay(action);
+        if (paid.outcome === "settled") {
+          present(paid.result);
+          await refresh();
+        }
+        return paid;
+      } catch (error) {
+        if (!isCancelled(error)) setNotice(messageOf(error, "That action could not be sent."));
+        return null;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, game, pay, pending, paused, present, refresh]
+  );
 
-  const onPull = async () => {
-    if (!canPull) return;
+  const create = React.useCallback(
+    async (draft: Draft) => {
+      if (paused || pending > 0 || busy !== null) return;
+      setBusy("createMachine");
+      setNotice(null);
+      try {
+        await game.call<DraftQuote>("savedraft", draft);
+        soundFx.playInsertCoin();
+        const paid = await pay("createMachine");
+        if (paid.outcome === "settled") {
+          present(paid.result);
+          await refresh();
+        }
+      } catch (error) {
+        if (!isCancelled(error)) setNotice(messageOf(error, "That machine could not be opened."));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, game, pay, pending, paused, present, refresh]
+  );
+
+  const openMachine = (id: string) => {
+    setView({ kind: "machine", id });
+    setReveal(null);
+    setPhase("IDLE");
     setNotice(null);
-    setPhase("PULLING");
-    soundFx.playDrumRoll();
-    let paid: Paid;
-    try {
-      paid = await pay(action);
-    } catch (error) {
-      setNotice(messageOf(error, "That pull could not be sent."));
-      setPhase("IDLE");
-      return;
-    }
-    if (paid.outcome === "cancelled" || paid.result.status !== "settled") {
-      // Either the player backed out, or the keeper still owes us a result --
-      // which arrives as a transaction event and plays through showSettled.
-      if (paid.outcome === "cancelled") setPhase("IDLE");
-      return;
-    }
-    const next = toReveal(paid.result, tier, generation, ++runId.current);
-    if (next) setReveal(next);
   };
 
-  const resultKind: PullFxResultKind = !reveal
-    ? "empty"
-    : reveal.row.kind === "item"
-      ? "nft"
-      : reveal.row.kind === "cashback"
-        ? "rf"
-        : "empty";
+  const onFxComplete = () => {
+    setPhase("REVEALED");
+    if (!reveal) return;
+    if (reveal.kind === "empty") soundFx.playNoPrize();
+    else if (reveal.kind === "nft") soundFx.playJackpot();
+    else soundFx.playPrizeWin();
+  };
 
-  const topPrize = topPrizeOf(tier, generation);
+  const balance = holdings.currency ? groupAmount(holdings.currency.balance) : "0";
 
   return (
     <div className="arcade">
       <header className="arcade-header">
-        <div className="arcade-brand">
+        <button className="arcade-brand" type="button" onClick={() => setView({ kind: "floor" })}>
           <PixelIcon name="machine" size={18} />
           <span>RARE ARCADE</span>
-        </div>
+        </button>
         <div className="arcade-friend">
           {game.art ? <FriendSprite art={game.art} size={32} paused={paused} /> : null}
           <span>
-            #{game.friend.id} · GEN {generation}
+            #{game.friend.id} · GEN {game.friend.generation}
           </span>
         </div>
         <div className="arcade-balance" title={`${CURRENCY} in the Friend wallet`}>
           <TokenIcon ticker={CURRENCY} size={16} decorative />
-          <span>{money(balance)}</span>
+          <span>{balance}</span>
         </div>
       </header>
 
-      <nav className="tier-picker" aria-label="Backing tier">
-        {TIER_KEYS.map((key) => {
-          const prize = topPrizeOf(key, generation);
-          return (
-            <button
-              key={key}
-              type="button"
-              className={`tier-button${key === tier ? " tier-button-active" : ""}`}
-              aria-pressed={key === tier}
-              disabled={game.actions[pullActionFor(key)]?.enabled === false || phase !== "IDLE"}
-              onClick={() => setTier(key)}
-            >
-              <span className="tier-name">{key.toUpperCase()}</span>
-              <span className="tier-backing">{prize ? `backs to ${itemOf(prize).backing} ${CURRENCY}` : ""}</span>
-            </button>
-          );
-        })}
+      <nav className="arcade-nav" aria-label="Arcade sections">
+        <button
+          type="button"
+          className={`arcade-nav-tab${view.kind === "floor" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setView({ kind: "floor" })}
+        >
+          <PixelIcon name="machine" size={12} /> FLOOR
+        </button>
+        <button
+          type="button"
+          className={`arcade-nav-tab${view.kind === "machine" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => {
+            const id = view.kind === "machine" ? view.id : snapshot.mine[0]?.id;
+            if (id) openMachine(id);
+          }}
+          disabled={!snapshot.mine.length && view.kind !== "machine"}
+        >
+          <PixelIcon name="creator" size={12} /> MY MACHINES
+        </button>
+        <button
+          type="button"
+          className={`arcade-nav-tab${view.kind === "claims" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setView({ kind: "claims" })}
+        >
+          <PixelIcon name="prize" size={12} /> CLAIMS
+          {snapshot.claims.length > 0 ? <span className="nav-badge">{snapshot.claims.length}</span> : null}
+        </button>
+        <button
+          type="button"
+          className={`arcade-nav-tab${view.kind === "create" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setView({ kind: "create" })}
+        >
+          <PixelIcon name="plus" size={12} /> CREATE
+        </button>
       </nav>
 
       {notice ? (
         <div className="arcade-notice" role="status">
           {notice}
+          <button className="notice-close" type="button" onClick={() => setNotice(null)} aria-label="Dismiss">
+            <PixelIcon name="close" size={12} />
+          </button>
         </div>
       ) : null}
 
-      <section className="arcade-cabinet">
-        <div className="cabinet-lcd">
-          <PixelPullFx
-            shell="classic"
-            active={phase === "PULLING"}
-            runId={reveal?.runId ?? 0}
-            resultKind={resultKind}
-            reducedMotion={paused}
-            onComplete={() => {
-              if (phase !== "PULLING") return;
-              setPhase("REVEALED");
-              const kind = reveal?.row.kind;
-              soundFx[kind === "empty" ? "playNoPrize" : kind === "item" ? "playJackpot" : "playPrizeWin"]();
-            }}
-          />
-          {!reveal && phase === "IDLE" ? (
-            <div className="cabinet-idle">
-              <span className="cabinet-idle-title">{tier.toUpperCase()} CABINET</span>
-              {topPrize ? (
-                <span className="cabinet-idle-sub">
-                  TOP PRIZE: {itemOf(topPrize).name.toUpperCase()} · BACKED BY {itemOf(topPrize).backing} {CURRENCY}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="cabinet-controls">
-          <button className="pull-button" onClick={onPull} disabled={!canPull} type="button">
-            <span>PULL</span>
-            <span className="pull-price">
-              {TIERS[tier].price} {CURRENCY}
-            </span>
-          </button>
-          <div className="cabinet-meta">
-            <span>{pending > 0 ? "SETTLING…" : info?.enabled === false ? "PAID PLAY UNAVAILABLE" : "READY"}</span>
-            {info?.reason ? <span className="cabinet-reason">{info.reason}</span> : null}
-          </div>
-          <button className="link-button" onClick={() => setOddsOpen(true)} type="button">
-            PUBLISHED ODDS
-          </button>
-        </div>
-      </section>
-
-      {reveal && phase === "REVEALED" ? (
-        <RevealPanel
-          reveal={reveal}
-          onDismiss={() => {
-            setReveal(null);
-            setPhase("IDLE");
-          }}
+      {view.kind === "floor" ? (
+        <Floor
+          snapshot={snapshot}
+          onOpen={openMachine}
+          onCreate={() => setView({ kind: "create" })}
+          onClaims={() => setView({ kind: "claims" })}
         />
       ) : null}
 
-      <PrizePanel ready={ready} />
+      {view.kind === "claims" ? (
+        <ClaimsView
+          claims={snapshot.claims}
+          available={holdings.actions.claimBacking?.available ?? false}
+          busy={busy !== null || pending > 0}
+          onClaim={(claim) => void act("claimBacking", { machineId: claim.machineId, tokenId: claim.tokenId })}
+          onOpen={openMachine}
+        />
+      ) : null}
+
+      {view.kind === "machine" ? (
+        detail ? (
+          <MachineView
+            detail={detail}
+            snapshot={snapshot}
+            holdings={holdings}
+            friendId={game.friend.id}
+            paused={paused}
+            pending={pending > 0}
+            busy={busy}
+            phase={phase}
+            reveal={reveal}
+            onBack={() => setView({ kind: "floor" })}
+            onOpenClaims={() => setView({ kind: "claims" })}
+            onPull={() => void act("pull", { machineId: detail.machine.id })}
+            onCreator={(action) => void act(action, { machineId: detail.machine.id })}
+            onFxComplete={onFxComplete}
+            onDismissReveal={() => {
+              setReveal(null);
+              setPhase("IDLE");
+            }}
+          />
+        ) : (
+          <p className="panel-empty">{detailError ?? "Opening the cabinet…"}</p>
+        )
+      ) : null}
+
+      {view.kind === "create" ? (
+        <CreateView
+          snapshot={snapshot}
+          holdings={holdings}
+          paused={paused}
+          busy={busy !== null || pending > 0}
+          onCreate={(draft) => void create(draft)}
+          onBack={() => setView({ kind: "floor" })}
+        />
+      ) : null}
 
       <footer className="arcade-footer">
         <PlatformFeeVisual ticker={CURRENCY} size={16} />
         <span className="arcade-rtp">
-          {tier.toUpperCase()} RTP GEN {generation}: {percentOf(rtpBpsFor(tier, generation))} ·{" "}
-          {cabinet.pulls} PULLS
+          {snapshot.stats.machines} MACHINES · {snapshot.stats.pulls} PULLS · {groupAmount(snapshot.stats.paid)} {CURRENCY} PAID
         </span>
       </footer>
-
-      {oddsOpen ? (
-        <OddsDialog tier={tier} generation={generation} onClose={() => setOddsOpen(false)} />
-      ) : null}
     </div>
   );
 }
 
-function RevealPanel({ reveal, onDismiss }: { reveal: Reveal; onDismiss: () => void }) {
-  const { row, paid } = reveal;
-  const item = row.item;
+function Floor({
+  snapshot,
+  onOpen,
+  onCreate,
+  onClaims,
+}: {
+  snapshot: Snapshot;
+  onOpen: (id: string) => void;
+  onCreate: () => void;
+  onClaims: () => void;
+}) {
+  const [tab, setTab] = React.useState<"all" | "live" | "mine">("all");
+  const machines = (tab === "mine" ? snapshot.mine : snapshot.machines).filter(
+    (machine) => tab !== "live" || machine.status === "live"
+  );
+
+  return (
+    <section className="floor">
+      <div className="floor-stats">
+        <Stat label="MACHINES" value={String(snapshot.stats.machines)} icon="machine" />
+        <Stat label="PULLS" value={String(snapshot.stats.pulls)} icon="pull" />
+        <Stat label={`${CURRENCY} WON`} value={groupAmount(snapshot.stats.paid)} icon="wallet" />
+        <Stat label="CREATORS" value={String(snapshot.stats.creators)} icon="creator" />
+      </div>
+
+      <div className="floor-tabs">
+        <button
+          type="button"
+          className={`arcade-nav-tab${tab === "all" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setTab("all")}
+        >
+          ALL
+        </button>
+        <button
+          type="button"
+          className={`arcade-nav-tab${tab === "live" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setTab("live")}
+        >
+          LIVE
+        </button>
+        <button
+          type="button"
+          className={`arcade-nav-tab${tab === "mine" ? " arcade-nav-tab-active" : ""}`}
+          onClick={() => setTab("mine")}
+        >
+          MINE
+        </button>
+        <button type="button" className="pixel-btn pixel-btn-sm floor-create" onClick={onCreate}>
+          <PixelIcon name="plus" size={12} /> OPEN A MACHINE
+        </button>
+      </div>
+
+      <div className="floor-layout">
+        <div className="machine-grid">
+          {machines.length === 0 ? (
+            <div className="panel-empty">
+              {tab === "mine" ? "You have no machines yet. Build one." : "The floor is empty. Be the first creator."}
+            </div>
+          ) : (
+            machines.map((machine) => (
+              <MachineCard key={machine.id} machine={machine} onOpen={() => onOpen(machine.id)} />
+            ))
+          )}
+        </div>
+
+        <aside className="floor-side">
+          <section className="floor-panel">
+            <h2 className="panel-title">RECENT WINS</h2>
+            {snapshot.recent.length === 0 ? (
+              <p className="panel-empty">No pulls yet.</p>
+            ) : (
+              <ul className="recent-list">
+                {snapshot.recent.map((entry, index) => (
+                  <RecentRow key={`${entry.machineId}-${entry.at}-${index}`} entry={entry} />
+                ))}
+              </ul>
+            )}
+          </section>
+          <section className="floor-panel">
+            <h2 className="panel-title">BIGGEST WINS</h2>
+            <TopList entries={snapshot.topWins} />
+          </section>
+          <section className="floor-panel">
+            <h2 className="panel-title">TOP CREATORS</h2>
+            <TopList entries={snapshot.topCreators} />
+          </section>
+          <button type="button" className="pixel-btn pixel-btn-sm" onClick={onClaims}>
+            <PixelIcon name="prize" size={12} /> YOUR CLAIMS ({snapshot.claims.length})
+          </button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, value, icon }: { label: string; value: string; icon: "machine" | "pull" | "wallet" | "creator" }) {
+  return (
+    <div className="floor-stat">
+      <PixelIcon name={icon} size={16} />
+      <span className="floor-stat-value">{value}</span>
+      <span className="floor-stat-label">{label}</span>
+    </div>
+  );
+}
+
+function MachineCard({ machine, onOpen }: { machine: MachineSummary; onOpen: () => void }) {
+  const creator = machine.creatorId === "" ? "UNKNOWN" : `#${machine.creatorId}`;
+  return (
+    <button type="button" className="machine-card" onClick={onOpen}>
+      <div className={`machine-card-art machine-card-${machine.shell}`}>
+        <div className="machine-card-marquee">{machine.name}</div>
+        <div className="machine-card-screen">
+          <PixelIcon name="machine" size={40} />
+          <span className={`machine-status machine-status-${machine.status}`}>{STATUS_LABEL[machine.status]}</span>
+        </div>
+        <div className="machine-card-hatch">{machine.shell.toUpperCase()} SHELL</div>
+      </div>
+      <div className="machine-card-body">
+        <div className="machine-card-line">
+          <span className="machine-card-creator">{creator} · GEN {machine.creatorGeneration}</span>
+          <span className="machine-card-price">{groupAmount(machine.price)} {CURRENCY}</span>
+        </div>
+        <div className="machine-card-meta">
+          <span>{machine.ticketsLeft} OF {machine.ticketCount} TICKETS LEFT</span>
+          <span>FLOOR RTP {machine.floorRtpBps / 100}%</span>
+        </div>
+        <div className="machine-card-stats">
+          <span><PixelIcon name="prize" size={11} /> {machine.nftCount} FRIENDS</span>
+          <span><TokenIcon ticker={CURRENCY} size={11} decorative /> {groupAmount(machine.nftBacking)}</span>
+          <span>TOP BACKING {groupAmount(machine.topBacking)}</span>
+        </div>
+        <div className="machine-card-open">OPEN CABINET <PixelIcon name="arrow-right" size={11} /></div>
+      </div>
+    </button>
+  );
+}
+
+function RecentRow({ entry }: { entry: RecentWin }) {
+  return (
+    <li className="recent-row">
+      <span className="recent-kind">
+        {entry.kind === "nft" ? <PixelIcon name="friend" size={11} /> : <TokenIcon ticker={CURRENCY} size={11} decorative />}
+        {entry.kind === "nft" ? (entry.item ? itemName(entry.item) : "FRIEND") : `${groupAmount(entry.amount ?? "0")} ${CURRENCY}`}
+      </span>
+      <span className="recent-machine">{entry.machineName}</span>
+      <span className="recent-player">#{entry.playerId}</span>
+    </li>
+  );
+}
+
+function TopList({ entries }: { entries: readonly TopEntry[] }) {
+  if (entries.length === 0) return <p className="panel-empty">No entries yet.</p>;
+  return (
+    <ol className="top-list">
+      {entries.map((entry, index) => (
+        <li key={entry.friendId} className="top-row">
+          <span className="top-rank">{index + 1}</span>
+          <span className="top-friend">#{entry.friendId}</span>
+          <span className="top-score">{scoreAmount(entry.score)} {CURRENCY}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function MachineView({
+  detail,
+  snapshot,
+  holdings,
+  friendId,
+  paused,
+  pending,
+  busy,
+  phase,
+  reveal,
+  onBack,
+  onOpenClaims,
+  onPull,
+  onCreator,
+  onFxComplete,
+  onDismissReveal,
+}: {
+  detail: MachineDetail;
+  snapshot: Snapshot;
+  holdings: Holdings;
+  friendId: string;
+  paused: boolean;
+  pending: boolean;
+  busy: string | null;
+  phase: "IDLE" | "PULLING" | "REVEALED";
+  reveal: Reveal | null;
+  onBack: () => void;
+  onOpenClaims: () => void;
+  onPull: () => void;
+  onCreator: (action: string) => void;
+  onFxComplete: () => void;
+  onDismissReveal: () => void;
+}) {
+  const machine = detail.machine;
+  const summary = summarizeMachine(machine);
+  const isCreator = machine.creatorId === friendId;
+  const receipts = parseUnits(machine.receipts) ?? 0n;
+  const activeReveal = reveal && reveal.data.machineId === machine.id ? reveal : null;
+  const localPhase = activeReveal ? phase : "IDLE";
+  const pullAvailable = holdings.actions.pull?.available ?? false;
+  const canPull = !paused && !pending && busy === null && localPhase === "IDLE" && machine.status === "live" && pullAvailable;
+
+  return (
+    <section className="machine-view">
+      <div className="machine-view-head">
+        <button type="button" className="link-button" onClick={onBack}>
+          <PixelIcon name="arrow-left" size={11} /> FLOOR
+        </button>
+        <div>
+          <h1 className="machine-title">{machine.name}</h1>
+          <p className="machine-sub">
+            #{machine.creatorId} · GEN {machine.creatorGeneration} · {machine.creatorFamily} · {machine.shell.toUpperCase()}
+          </p>
+        </div>
+        <span className={`machine-status machine-status-${machine.status}`}>{STATUS_LABEL[machine.status]}</span>
+      </div>
+
+      <div className="machine-layout">
+        <div className="machine-stage">
+          <div className={`cabinet-container cabinet-shell-${machine.shell}`}>
+            <div className="cabinet-header">
+              <span className="machine-title-sm">{machine.name}</span>
+              <span className="machine-header-status">{STATUS_LABEL[machine.status]}</span>
+            </div>
+            <div className="cabinet-screen-bezel">
+              <div className="cabinet-lcd-screen">
+                <PixelPullFx
+                  shell={machine.shell}
+                  active={localPhase === "PULLING" && activeReveal !== null}
+                  runId={activeReveal?.runId ?? 0}
+                  resultKind={activeReveal?.kind ?? "empty"}
+                  reducedMotion={paused}
+                  onComplete={onFxComplete}
+                />
+                {localPhase === "IDLE" ? (
+                  <div className="cabinet-idle">
+                    <span className="cabinet-idle-title">{machine.shell.toUpperCase()} CABINET</span>
+                    <span className="cabinet-idle-sub">
+                      {machine.status === "live"
+                        ? `${summary.ticketsLeft} TICKETS · TOP BACKING ${groupAmount(summary.topBacking)} ${CURRENCY}`
+                        : STATUS_LABEL[machine.status]}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="cabinet-controls">
+              <button type="button" className="pull-button" onClick={onPull} disabled={!canPull}>
+                <span>{pending ? "SETTLING…" : "PULL"}</span>
+                <span className="pull-price">
+                  <TokenIcon ticker={CURRENCY} size={13} decorative /> {groupAmount(machine.price)}
+                </span>
+              </button>
+              <div className="cabinet-meta">
+                <span>
+                  {localPhase === "PULLING"
+                    ? "THE DRUM IS TURNING…"
+                    : machine.status === "sold_out"
+                      ? "SOLD OUT"
+                      : pullAvailable
+                        ? "READY"
+                        : holdings.actions.pull?.reason ?? "PULLS UNAVAILABLE"}
+                </span>
+                <span>{machine.pulled} OF {machine.ticketCount} PULLED</span>
+              </div>
+            </div>
+            <div className="cabinet-hatch">RARE ARCADE · {CURRENCY} MACHINE</div>
+          </div>
+
+          {activeReveal && localPhase === "REVEALED" ? (
+            <RevealPanel reveal={activeReveal} onClose={onDismissReveal} />
+          ) : null}
+
+          <div className="machine-ledger">
+            <div className="machine-ledger-row">
+              <span>PRIZE POOL</span>
+              <span>{groupAmount(machine.pool)} {CURRENCY}</span>
+            </div>
+            <div className="machine-ledger-row">
+              <span>BACKING HELD</span>
+              <span>{groupAmount(machine.backingPool)} {CURRENCY}</span>
+            </div>
+            <div className="machine-ledger-row">
+              <span>USDG PRIZES HELD</span>
+              <span>{groupAmount(machine.usdgPool)} {CURRENCY}</span>
+            </div>
+            <div className="machine-ledger-row">
+              <span>CREATOR RECEIPTS</span>
+              <span>{groupAmount(machine.receipts)} {CURRENCY}</span>
+            </div>
+            <div className="machine-ledger-row">
+              <span>LIFETIME RECEIPTS</span>
+              <span>{groupAmount(machine.lifetimeReceipts)} {CURRENCY}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="machine-stock">
+          <section className="floor-panel">
+            <h2 className="panel-title">RARE FRIENDS IN THE MACHINE</h2>
+            {machine.nftPrizes.length === 0 ? (
+              <p className="panel-empty">No Friends stocked.</p>
+            ) : (
+              <ul className="stock-list">
+                {machine.nftPrizes.map((prize) => (
+                  <li key={prize.tokenId} className={`stock-row${prize.won ? " stock-row-won" : ""}`}>
+                    <PixelIcon name="friend" size={14} />
+                    <span className="stock-name">
+                      {itemName(prize.item)} <span className="stock-id">#{prize.tokenId}</span>
+                    </span>
+                    <span className="stock-backing">{groupAmount(prize.backing)} {CURRENCY}</span>
+                    <span className="stock-won">{prize.won ? "WON" : "IN STOCK"}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="floor-panel">
+            <h2 className="panel-title">USDG PRIZES</h2>
+            {machine.usdgPrizes.length === 0 ? (
+              <p className="panel-empty">No USDG prizes.</p>
+            ) : (
+              <ul className="stock-list">
+                {machine.usdgPrizes.map((prize, index) => (
+                  <li key={`${prize.amount}-${index}`} className="stock-row">
+                    <TokenIcon ticker={CURRENCY} size={14} decorative />
+                    <span className="stock-name">{groupAmount(prize.amount)} {CURRENCY}</span>
+                    <span className="stock-backing">{prize.won} OF {prize.count} WON</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {isCreator ? (
+            <section className="floor-panel creator-panel">
+              <h2 className="panel-title">CREATOR CONTROL</h2>
+              <p className="creator-note">
+                Receipts are the creator&apos;s 95% of each pull. They sit in the machine until you collect them.
+              </p>
+              <div className="creator-actions">
+                <button
+                  type="button"
+                  className="pixel-btn pixel-btn-sm"
+                  disabled={busy !== null || pending || receipts === 0n}
+                  onClick={() => onCreator("withdrawMachine")}
+                >
+                  COLLECT {groupAmount(machine.receipts)} {CURRENCY}
+                </button>
+                {machine.status === "live" ? (
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={busy !== null || pending}
+                    onClick={() => onCreator("pauseMachine")}
+                  >
+                    PAUSE
+                  </button>
+                ) : null}
+                {machine.status === "paused" ? (
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={busy !== null || pending}
+                    onClick={() => onCreator("resumeMachine")}
+                  >
+                    RESUME
+                  </button>
+                ) : null}
+                {machine.pulled === 0 && machine.status !== "cancelled" ? (
+                  <button
+                    type="button"
+                    className="pixel-btn pixel-btn-sm"
+                    disabled={busy !== null || pending}
+                    onClick={() => {
+                      if (window.confirm("Cancel this machine? Every stocked Friend and all prize USDG go back to you.")) {
+                        onCreator("cancelMachine");
+                      }
+                    }}
+                  >
+                    CANCEL &amp; EMPTY
+                  </button>
+                ) : null}
+              </div>
+              <p className="creator-note">Published floor RTP: {summary.floorRtpBps / 100}%.</p>
+            </section>
+          ) : null}
+
+          <section className="floor-panel">
+            <h2 className="panel-title">UNCLAIMED BACKING</h2>
+            {detail.claims.length === 0 ? (
+              <p className="panel-empty">No unclaimed Friends from this machine.</p>
+            ) : (
+              <ul className="stock-list">
+                {detail.claims.map((claim) => (
+                  <li key={claim.tokenId} className="stock-row">
+                    <PixelIcon name="friend" size={14} />
+                    <span className="stock-name">
+                      {itemName(claim.item)} <span className="stock-id">#{claim.tokenId}</span>
+                    </span>
+                    <span className="stock-backing">{groupAmount(claim.backing)} {CURRENCY}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {detail.recent.length > 0 ? (
+            <section className="floor-panel">
+              <h2 className="panel-title">MACHINE HISTORY</h2>
+              <ul className="recent-list">
+                {detail.recent.map((entry, index) => (
+                  <RecentRow key={`${entry.at}-${index}`} entry={entry} />
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {snapshot.claims.length > 0 ? (
+            <button type="button" className="pixel-btn pixel-btn-sm" onClick={onOpenClaims}>
+              <PixelIcon name="prize" size={12} /> YOUR CLAIMS ({snapshot.claims.length})
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RevealPanel({ reveal, onClose }: { reveal: Reveal; onClose: () => void }) {
+  const data = reveal.data;
   return (
     <div className="reveal-panel" role="status">
       <div className="reveal-headline">
-        {row.kind === "empty" ? "NO PRIZE" : row.kind === "cashback" ? "CASHBACK" : "A FRIEND!"}
+        {data.result === "nft" ? "A FRIEND!" : data.result === "usdg" ? "USDG PRIZE" : "NO PRIZE"}
       </div>
       <div className="reveal-body">
-        {row.kind === "cashback" ? (
+        {data.result === "nft" && data.item ? (
           <p>
-            You won {money(paid)} {CURRENCY}. The arcade took 5%.
+            {itemName(data.item)} <span className="stock-id">#{data.tokenId}</span> is in your Friend wallet, backed by{" "}
+            {groupAmount(data.backing ?? "0")} {CURRENCY}. Keep it or claim the backing from CLAIMS.
           </p>
-        ) : row.kind === "item" && item ? (
+        ) : data.result === "usdg" ? (
           <p>
-            A {itemOf(item).name} is now held by your Friend&apos;s wallet, backed by {itemOf(item).backing}{" "}
-            {CURRENCY}. Keep it, or claim {itemOf(item).redeemValue} {CURRENCY} from YOUR CABINET below.
+            You won {groupAmount(data.amount ?? "0")} {CURRENCY}. It is in your Friend wallet.
           </p>
         ) : (
-          <p>The lever moved and the drum came up empty.</p>
+          <p>The drum came up empty. The machine keeps its prize pool for the next pull.</p>
         )}
       </div>
-      <button className="link-button" onClick={onDismiss} type="button">
+      <button className="link-button" type="button" onClick={onClose}>
         CLOSE
       </button>
     </div>
   );
 }
 
-function PrizePanel({ ready }: { ready: Ready<Cabinet> }) {
-  const { game, holdings } = ready;
-  const [busy, setBusy] = React.useState<string | null>(null);
-  const [notice, setNotice] = React.useState<string | null>(null);
-
-  const { pay } = usePayments(game, {
-    pending: () => undefined,
-    settled: () => setNotice(null),
-    failed: (result) => setNotice(result.error ?? "That claim could not be settled."),
-    refresh: async () => undefined,
-    busy: () => busy !== null,
-  });
-
-  const held = ITEM_IDS.filter((id) => (holdings.items[id] ?? 0) > 0);
-
+function ClaimsView({
+  claims,
+  available,
+  busy,
+  onClaim,
+  onOpen,
+}: {
+  claims: readonly Claim[];
+  available: boolean;
+  busy: boolean;
+  onClaim: (claim: Claim) => void;
+  onOpen: (id: string) => void;
+}) {
   return (
-    <section className="prize-panel">
-      <h2 className="panel-title">YOUR CABINET</h2>
-      {notice ? <p className="arcade-notice">{notice}</p> : null}
-      {held.length === 0 ? (
-        <p className="panel-empty">Nothing held yet. Pull a lever.</p>
+    <section className="claims-view">
+      <div className="machine-view-head">
+        <div>
+          <h1 className="machine-title">YOUR CLAIMS</h1>
+          <p className="machine-sub">Backing is paid from the machine&apos;s escrow. Claiming burns the Friend.</p>
+        </div>
+      </div>
+      {claims.length === 0 ? (
+        <p className="panel-empty">No unclaimed Friends. Pull a machine or keep your winnings.</p>
       ) : (
-        <ul className="prize-list">
-          {held.map((id) => {
-            const item = itemOf(id);
-            const claimAction = claimActionFor(id);
-            const fee = platformFeeOf(item.backing);
-            const claimable = holdings.actions[claimAction]?.available ?? false;
-            return (
-              <li key={id} className="prize-row">
-                <div className="prize-name">
-                  <PixelIcon name={item.rarity === "genesisFriend" ? "trophy" : "friend"} size={16} />
-                  <span>
-                    {item.name} ×{holdings.items[id]}
-                  </span>
-                  <span className="prize-tier">{item.tier}</span>
+        <div className="claim-grid">
+          {claims.map((claim) => (
+            <article className="claim-card" key={claim.tokenId}>
+              <div className="claim-card-head">
+                <PixelIcon name="friend" size={18} />
+                <div>
+                  <div className="claim-card-name">{itemName(claim.item)}</div>
+                  <div className="claim-card-id">#{claim.tokenId} · {claim.machineName}</div>
                 </div>
-                <div className="prize-terms">
-                  backed {item.backing} {CURRENCY} · claim {item.redeemValue} {CURRENCY} · arcade keeps{" "}
-                  {moneyExact(fee)}
-                </div>
-                <div className="prize-choice">
-                  <span className="prize-keep">KEEP THE FRIEND</span>
-                  <button
-                    className="claim-button"
-                    type="button"
-                    disabled={!claimable || busy !== null}
-                    onClick={async () => {
-                      setBusy(claimAction);
-                      try {
-                        const result = await pay(claimAction);
-                        if (result.outcome === "settled") {
-                          setNotice(`Claimed ${item.redeemValue} ${CURRENCY}. The arcade kept 5%.`);
-                        }
-                      } catch (error) {
-                        setNotice(messageOf(error, "That claim could not be sent."));
-                      } finally {
-                        setBusy(null);
-                      }
-                    }}
-                  >
-                    CLAIM {item.redeemValue} {CURRENCY}
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+              </div>
+              <div className="claim-card-backing">
+                <span>BACKING</span>
+                <strong>{groupAmount(claim.backing)} {CURRENCY}</strong>
+              </div>
+              <p className="claim-card-note">
+                Claim the USDG and the Friend is burned. Keep the Friend in your wallet instead if you prefer.
+              </p>
+              <div className="claim-card-actions">
+                <button type="button" className="claim-button" disabled={!available || busy} onClick={() => onClaim(claim)}>
+                  CLAIM {groupAmount(claim.backing)} {CURRENCY}
+                </button>
+                <button type="button" className="link-button" onClick={() => onOpen(claim.machineId)}>
+                  VIEW MACHINE
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
       )}
     </section>
   );
 }
 
-function OddsDialog({
-  tier,
-  generation,
-  onClose,
+function CreateView({
+  snapshot,
+  holdings,
+  paused,
+  busy,
+  onCreate,
+  onBack,
 }: {
-  tier: TierKey;
-  generation: Generation;
-  onClose: () => void;
+  snapshot: Snapshot;
+  holdings: Holdings;
+  paused: boolean;
+  busy: boolean;
+  onCreate: (draft: Draft) => void;
+  onBack: () => void;
 }) {
+  const [draft, setDraft] = React.useState<Draft>(() => draftOf(snapshot.draft));
+  const quote = React.useMemo(() => quoteDraft(draft), [draft]);
+  const balance = holdings.currency ? parseUnits(holdings.currency.balance) ?? 0n : 0n;
+  const funding = parseUnits(quote.funding) ?? 0n;
+  const tokens = (holdings.tokens ?? []).filter(
+    (token) => token.where === "friend" && (token.item === "genesisFriend" || token.item === "generationsFriend")
+  );
+  const issues = draftIssues(draft, quote, balance);
+
+  const setPrize = (tokenId: string, backing: string) => {
+    setDraft((current) => ({
+      ...current,
+      nftPrizes: current.nftPrizes.map((prize) => (prize.tokenId === tokenId ? { ...prize, backing } : prize)),
+    }));
+  };
+
+  const toggleToken = (id: string, item: ItemId) => {
+    setDraft((current) => {
+      const exists = current.nftPrizes.some((prize) => prize.tokenId === id);
+      return {
+        ...current,
+        nftPrizes: exists
+          ? current.nftPrizes.filter((prize) => prize.tokenId !== id)
+          : [...current.nftPrizes, { tokenId: id, item, backing: "1" }],
+      };
+    });
+  };
+
+  const setUsdg = (index: number, patch: Partial<{ amount: string; count: number }>) => {
+    setDraft((current) => ({
+      ...current,
+      usdgPrizes: current.usdgPrizes.map((line, lineIndex) => (lineIndex === index ? { ...line, ...patch } : line)),
+    }));
+  };
+
   return (
-    <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Published odds">
-        <h2 className="panel-title">
-          PUBLISHED ODDS · {tier.toUpperCase()} · GEN {generation}
-        </h2>
-        <p className="modal-lede">
-          Locked to your Friend before you pull. Backing is what the arcade pays out of its prize pool — it is
-          not an estimate of what a Rare Friend is worth.
-        </p>
-        <table className="odds-table">
-          <thead>
-            <tr>
-              <th>OUTCOME</th>
-              <th>ODDS</th>
-              <th>YOU RECEIVE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {oddsFor(tier, generation).map((row) => (
-              <tr key={row.key}>
-                <td>{row.label}</td>
-                <td>{(row.weight / 100).toFixed(2)}%</td>
-                <td>
-                  {row.kind === "empty" ? "—" : `${row.value} ${CURRENCY}${row.kind === "item" ? " or keep the Friend" : ""}`}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="modal-foot">
-          RTP {percentOf(rtpBpsFor(tier, generation))} · pull price {TIERS[tier].price} {CURRENCY} ·{" "}
-          {Number(PLATFORM_FEE_BPS) / 100}% platform fee on spend, on winnings and on claimed backing.
-        </p>
-        <button className="link-button" onClick={onClose} type="button">
-          CLOSE
+    <section className="create-view">
+      <div className="machine-view-head">
+        <button type="button" className="link-button" onClick={onBack}>
+          <PixelIcon name="arrow-left" size={11} /> FLOOR
         </button>
+        <div>
+          <h1 className="machine-title">OPEN A MACHINE</h1>
+          <p className="machine-sub">Stock the prizes, name your price, and the floor does the rest.</p>
+        </div>
       </div>
+
+      <div className="create-layout">
+        <div className="create-main">
+          <section className="pixel-panel create-panel">
+            <h2 className="panel-title">THE CABINET</h2>
+            <label className="field">
+              <span>NAME</span>
+              <input
+                value={draft.name}
+                maxLength={28}
+                placeholder="Saturday Night Pulls"
+                onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <div className="field">
+              <span>SHELL</span>
+              <div className="shell-picker">
+                {SHELLS.map((shell) => (
+                  <button
+                    key={shell}
+                    type="button"
+                    className={`shell-button${draft.shell === shell ? " shell-button-active" : ""}`}
+                    onClick={() => setDraft((current) => ({ ...current, shell }))}
+                  >
+                    <PixelIcon name="machine" size={18} />
+                    <span>{shell.toUpperCase()}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="field-row">
+              <label className="field">
+                <span>PULL PRICE ({CURRENCY})</span>
+                <input
+                  inputMode="decimal"
+                  value={draft.price}
+                  onChange={(event) => setDraft((current) => ({ ...current, price: event.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>TICKETS IN THE DECK</span>
+                <input
+                  inputMode="numeric"
+                  value={String(draft.ticketCount)}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, ticketCount: Number(event.target.value) || MIN_TICKETS }))
+                  }
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="pixel-panel create-panel">
+            <h2 className="panel-title">RARE FRIENDS TO STOCK</h2>
+            <p className="create-hint">
+              Pick Friends from your wallet. Each one gets a USDG backing; the winner keeps the Friend or claims the backing.
+            </p>
+            {tokens.length === 0 ? (
+              <p className="panel-empty">No Rare Friends in this Friend&apos;s wallet.</p>
+            ) : (
+              <ul className="token-picker">
+                {tokens.map((token) => {
+                  const prize = draft.nftPrizes.find((entry) => entry.tokenId === token.id);
+                  return (
+                    <li key={token.id} className={`token-row${prize ? " token-row-selected" : ""}`}>
+                      <label className="token-check">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(prize)}
+                          onChange={() => toggleToken(token.id, token.item as ItemId)}
+                        />
+                        <PixelIcon name="friend" size={16} />
+                        <span>
+                          {itemName(token.item as ItemId)} <span className="stock-id">#{token.id}</span>
+                        </span>
+                      </label>
+                      {prize ? (
+                        <label className="token-backing">
+                          BACKING
+                          <input
+                            inputMode="decimal"
+                            value={prize.backing}
+                            onChange={(event) => setPrize(token.id, event.target.value)}
+                          />
+                          {CURRENCY}
+                        </label>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          <section className="pixel-panel create-panel">
+            <h2 className="panel-title">USDG PRIZES</h2>
+            <p className="create-hint">Pre-fund USDG prizes. Every ticket you do not fill with a prize is a blank.</p>
+            {draft.usdgPrizes.map((line, index) => (
+              <div className="usdg-row" key={index}>
+                <label>
+                  AMOUNT
+                  <input
+                    inputMode="decimal"
+                    value={line.amount}
+                    onChange={(event) => setUsdg(index, { amount: event.target.value })}
+                  />
+                </label>
+                <label>
+                  COPIES
+                  <input
+                    inputMode="numeric"
+                    value={String(line.count)}
+                    onChange={(event) => setUsdg(index, { count: Number(event.target.value) || 1 })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() =>
+                    setDraft((current) => ({ ...current, usdgPrizes: current.usdgPrizes.filter((_, i) => i !== index) }))
+                  }
+                >
+                  <PixelIcon name="close" size={11} /> REMOVE
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="pixel-btn pixel-btn-sm"
+              onClick={() =>
+                setDraft((current) => ({ ...current, usdgPrizes: [...current.usdgPrizes, { amount: "1", count: 1 }] }))
+              }
+            >
+              <PixelIcon name="plus" size={11} /> ADD USDG PRIZE
+            </button>
+          </section>
+        </div>
+
+        <aside className="create-side">
+          <section className="pixel-panel create-quote">
+            <h2 className="panel-title">THE OFFER</h2>
+            <QuoteRow label="PRIZE FUNDING" value={`${groupAmount(quote.funding)} ${CURRENCY}`} />
+            <QuoteRow label="YOUR BALANCE" value={`${displayUnits(balance)} ${CURRENCY}`} />
+            <QuoteRow label="PRIZE TICKETS" value={`${quote.prizeTickets} OF ${draft.ticketCount}`} />
+            <QuoteRow label="BLANKS" value={String(quote.blanks)} />
+            <QuoteRow label="FLOOR RTP" value={`${quote.floorRtpBps / 100}%`} />
+            <QuoteRow label="PLATFORM FEE / PULL" value={`${groupAmount(quote.feePerPull)} ${CURRENCY}`} />
+            <QuoteRow label="YOU EARN / PULL" value={`${groupAmount(quote.creatorPerPull)} ${CURRENCY}`} />
+            <div className="create-breakdown">
+              <span>FRIENDS {groupAmount(quote.nftBacking)}</span>
+              <span>USDG {groupAmount(quote.usdgValue)}</span>
+            </div>
+            <PlatformFeeVisual ticker={CURRENCY} size={16} compact />
+          </section>
+
+          {issues.length > 0 ? (
+            <ul className="create-issues">
+              {issues.map((issue) => (
+                <li key={issue}>{issue}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="create-ready">READY. The contract will escrow the Friends and the USDG when you open it.</p>
+          )}
+
+          <button
+            type="button"
+            className="pixel-btn pixel-btn-primary pixel-btn-lg"
+            disabled={paused || busy || issues.length > 0 || funding > balance}
+            onClick={() => onCreate(draft)}
+          >
+            {busy ? "OPENING…" : `OPEN MACHINE · ${groupAmount(quote.funding)} ${CURRENCY}`}
+          </button>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function QuoteRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="quote-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
+}
+
+function draftIssues(draft: Draft, quote: DraftQuote, balance: bigint): string[] {
+  const issues: string[] = [];
+  if (!NAME_PATTERN.test(draft.name)) issues.push("Name must be 3-28 plain characters.");
+  const price = parseUnits(draft.price);
+  if (price === null || price < MIN_PRICE || price > MAX_PRICE) issues.push(`Pull price must be 0.1-1,000 ${CURRENCY}.`);
+  if (draft.ticketCount < MIN_TICKETS || draft.ticketCount > MAX_TICKETS) {
+    issues.push(`The deck needs ${MIN_TICKETS}-${MAX_TICKETS} tickets.`);
+  }
+  for (const prize of draft.nftPrizes) {
+    const backing = parseUnits(prize.backing);
+    if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) {
+      issues.push(`Backing for #${prize.tokenId} must be 0.1-10,000 ${CURRENCY}.`);
+    }
+  }
+  for (const line of draft.usdgPrizes) {
+    const amount = parseUnits(line.amount);
+    if (amount === null || amount < MIN_BACKING) issues.push(`USDG prizes must be at least 0.1 ${CURRENCY}.`);
+    if (!Number.isInteger(line.count) || line.count < 1 || line.count > MAX_PRIZE_COPIES) issues.push("A USDG line has 1-20 copies.");
+  }
+  if (quote.prizeTickets < 1) issues.push("Stock at least one prize.");
+  if (quote.prizeTickets > draft.ticketCount) issues.push("The deck has more prize tickets than tickets.");
+  if (quote.floorRtpBps < MIN_RTP_BPS || quote.floorRtpBps > MAX_RTP_BPS) {
+    issues.push(`Floor RTP must be ${MIN_RTP_BPS / 100}%-${MAX_RTP_BPS / 100}%.`);
+  }
+  if ((parseUnits(quote.funding) ?? 0n) > MAX_FUNDING) issues.push("That machine is too heavily stocked.");
+  if ((parseUnits(quote.funding) ?? 0n) > balance) issues.push(`You need ${groupAmount(quote.funding)} ${CURRENCY} to fund it.`);
+  return issues;
 }

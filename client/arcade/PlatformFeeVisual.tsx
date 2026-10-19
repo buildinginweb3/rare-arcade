@@ -1,7 +1,7 @@
 import React from 'react';
 import { TokenIcon } from '../ui/TokenIcon.tsx';
 import { PixelIcon } from '../ui/PixelIcon.tsx';
-import { PLATFORM_FEE_BPS } from '../lib/economy.ts';
+import { PLATFORM_FEE_BPS } from '../../shared/arcade.ts';
 
 const FEE_PCT = `${Number(PLATFORM_FEE_BPS) / 100}%`;
 

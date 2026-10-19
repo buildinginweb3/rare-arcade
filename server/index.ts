@@ -1,56 +1,626 @@
-import { defineGame, type Transaction, type TransactionContext } from "@rarefriends/friendsdk/server";
-
 /**
  * Rare Arcade server rules.
  *
- * Each pull is settled on chain by the keeper: `pullStarter`, `pullClassic` and
- * `pullGrand` are `draw`s, so their randomness arrives from the platform
- * coordinator rather than from anything the browser chose. What the server owns
- * is the arcade's own record of how many pulls a Friend has made, and the
- * leaderboard built from it.
+ * The machines themselves live in the arcade contract on Robinhood Chain: the
+ * contract escrows the Rare Friends, the USDG prize pool and the backing, and
+ * its keeper watcher reports every state change. This module is the arcade's
+ * catalogue and receipt book. It mirrors what the watcher reports so the floor,
+ * the creator cabinets and the claim shelf survive a reload, and it owns the
+ * draft the create wizard builds before a transaction is sent.
  *
- * The odds, the RTP and the backing are NOT here. They live in
- * client/lib/economy.json, which generates friendsdk.json -- the same file the
- * chain settles against. Server state can never become a second, drifting copy
- * of the economy.
+ * No amount is invented here. Prices, backing, ticket counts and the finite
+ * deck come from the player's draft; the platform fee and RTP band are the
+ * shared constants in shared/arcade.ts. The contract is the escrow.
  */
 
-type Cabinet = Readonly<{ pulls: number; genesisWon: number; generationsWon: number }>;
+import {
+  GameError,
+  check,
+  defineGame,
+  type CallContext,
+  type Json,
+  type JsonInput,
+  type Transaction,
+  type TransactionContext,
+} from "@rarefriends/friendsdk/server";
+import {
+  CURRENCY,
+  EMPTY_ME,
+  EMPTY_STATS,
+  ITEM_IDS,
+  MAX_BACKING,
+  MAX_FUNDING,
+  MAX_MACHINES_PER_CREATOR,
+  MAX_NFT_PRIZES,
+  MAX_PRICE,
+  MAX_PRIZE_COPIES,
+  MAX_RTP_BPS,
+  MAX_TICKETS,
+  MAX_TOTAL_MACHINES,
+  MAX_USDG_LINES,
+  MIN_BACKING,
+  MIN_PRICE,
+  MIN_RTP_BPS,
+  MIN_TICKETS,
+  NAME_PATTERN,
+  SHELLS,
+  TOKEN_ID_PATTERN,
+  creatorShareOf,
+  formatUnits,
+  parseUnits,
+  quoteDraft,
+  summarizeMachine,
+  unitsNumber,
+  type ArcadeEventData,
+  type Claim,
+  type Draft,
+  type DraftNft,
+  type DraftUsdg,
+  type EventMachine,
+  type Machine,
+  type MachineDetail,
+  type Me,
+  type RecentWin,
+  type Snapshot,
+  type Stats,
+  type TopEntry,
+} from "../shared/arcade.ts";
 
-const EMPTY: Cabinet = { pulls: 0, genesisWon: 0, generationsWon: 0 };
+const INDEX_KEY = "machineIndex";
+const CLAIMS_KEY = "claimIndex";
+const STATS_KEY = "stats";
+const RECENT_KEY = "recentWins";
+const CREATORS_KEY = "creatorIds";
+const DRAFT_KEY = "draft";
+const SELECTION_KEY = "selection";
+const ME_KEY = "me";
+const MACHINE_PREFIX = "machine:";
+const CLAIM_PREFIX = "claim:";
+const PULL_PREFIX = "pulled:";
 
-/** Tally a settled draw. Item ids are `genFriend<N>` / `genesisFriend<N>`. */
-function record(ctx: TransactionContext, items: Transaction["items"]) {
-  const cabinet = ctx.data.get<Cabinet>("cabinet") ?? EMPTY;
-  let { genesisWon, generationsWon } = cabinet;
-  for (const [id, count] of Object.entries(items ?? {})) {
-    if (id.startsWith("genesisFriend")) genesisWon += count;
-    else if (id.startsWith("genFriend")) generationsWon += count;
+type AnyContext = CallContext | TransactionContext;
+
+function readIndex(ctx: AnyContext): string[] {
+  return ctx.shared.get<string[]>(INDEX_KEY) ?? [];
+}
+
+function writeIndex(ctx: AnyContext, ids: readonly string[]): void {
+  ctx.shared.set(INDEX_KEY, ids.slice(0, MAX_TOTAL_MACHINES));
+}
+
+function readClaimIndex(ctx: AnyContext): string[] {
+  return ctx.shared.get<string[]>(CLAIMS_KEY) ?? [];
+}
+
+function readStats(ctx: AnyContext): Stats {
+  return ctx.shared.get<Stats>(STATS_KEY) ?? EMPTY_STATS;
+}
+
+function writeStats(ctx: AnyContext, stats: Stats): void {
+  ctx.shared.set(STATS_KEY, stats);
+}
+
+function readRecent(ctx: AnyContext): RecentWin[] {
+  return ctx.shared.get<RecentWin[]>(RECENT_KEY) ?? [];
+}
+
+function readCreators(ctx: AnyContext): string[] {
+  return ctx.shared.get<string[]>(CREATORS_KEY) ?? [];
+}
+
+function readMe(ctx: AnyContext): Me {
+  return ctx.data.get<Me>(ME_KEY) ?? EMPTY_ME;
+}
+
+function writeMe(ctx: AnyContext, me: Me): void {
+  ctx.data.set(ME_KEY, me);
+}
+
+function readMachines(ctx: AnyContext): Machine[] {
+  const machines: Machine[] = [];
+  for (const id of readIndex(ctx)) {
+    const machine = ctx.shared.get<Machine>(MACHINE_PREFIX + id);
+    if (machine) machines.push(machine);
+  }
+  return machines;
+}
+
+function machineOf(ctx: AnyContext, id: string): Machine | null {
+  return ctx.shared.get<Machine>(MACHINE_PREFIX + id);
+}
+
+function storeMachine(ctx: AnyContext, machine: Machine): void {
+  ctx.shared.set(MACHINE_PREFIX + machine.id, machine as unknown as JsonInput);
+  const index = readIndex(ctx);
+  if (!index.includes(machine.id)) {
+    index.unshift(machine.id);
+    writeIndex(ctx, index);
+  }
+}
+
+function readClaims(ctx: AnyContext): Claim[] {
+  const claims: Claim[] = [];
+  for (const tokenId of readClaimIndex(ctx)) {
+    const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + tokenId);
+    if (claim) claims.push(claim);
+  }
+  return claims;
+}
+
+function storeClaim(ctx: AnyContext, claim: Claim): void {
+  ctx.shared.set(CLAIM_PREFIX + claim.tokenId, claim as unknown as JsonInput);
+  const index = readClaimIndex(ctx);
+  if (!index.includes(claim.tokenId)) {
+    index.unshift(claim.tokenId);
+    ctx.shared.set(CLAIMS_KEY, index);
+  }
+}
+
+function addRecent(ctx: AnyContext, entry: RecentWin): void {
+  const recent = readRecent(ctx);
+  recent.unshift(entry);
+  ctx.shared.set(RECENT_KEY, recent.slice(0, 12));
+}
+
+function mergeState(machine: Machine, state: EventMachine): Machine {
+  if (state.version <= machine.version) return machine;
+  return {
+    ...machine,
+    status: state.status,
+    pulled: state.pulled,
+    pool: state.pool,
+    backingPool: state.backingPool,
+    usdgPool: state.usdgPool,
+    receipts: state.receipts,
+    version: state.version,
+  };
+}
+
+function eventData(tx: Transaction): ArcadeEventData | null {
+  const data = tx.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const record = data as Record<string, unknown>;
+  if (typeof record.machineId !== "string") return null;
+  if (typeof record.machine !== "object" || record.machine === null || Array.isArray(record.machine)) return null;
+  return data as unknown as ArcadeEventData;
+}
+
+function unitsOf(amount: string | undefined): bigint {
+  return parseUnits(amount ?? "0") ?? 0n;
+}
+
+function addAmount(left: string | undefined, right: string | undefined): string {
+  return formatUnits(unitsOf(left) + unitsOf(right));
+}
+
+function top(ctx: AnyContext, name: string): TopEntry[] {
+  return ctx.leaderboard(name).top(5).map((entry) => ({ friendId: entry.friendId, score: entry.score }));
+}
+
+function snapshot(ctx: CallContext): Snapshot {
+  const machines = readMachines(ctx);
+  const mine = machines.filter((machine) => machine.creatorId === ctx.friend.id);
+  const claims = readClaims(ctx).filter((claim) => claim.winnerId === ctx.friend.id && !claim.claimed);
+  const draft = ctx.data.get<Draft>(DRAFT_KEY);
+  return {
+    me: readMe(ctx),
+    machines: machines.filter((machine) => machine.status !== "cancelled").map(summarizeMachine),
+    mine: mine.map(summarizeMachine),
+    claims,
+    recent: readRecent(ctx),
+    stats: readStats(ctx),
+    topWins: top(ctx, "biggestWin"),
+    topCreators: top(ctx, "topCreator"),
+    draft: draft ? quoteDraft(draft) : null,
+    selection: ctx.data.get<Snapshot["selection"]>(SELECTION_KEY) ?? {},
+  };
+}
+
+function detail(ctx: CallContext, id: string): MachineDetail {
+  const machine = machineOf(ctx, id);
+  if (!machine) throw new GameError("That machine is not on the arcade floor.");
+  return {
+    machine,
+    claims: readClaims(ctx).filter((claim) => claim.machineId === id && !claim.claimed),
+    recent: readRecent(ctx).filter((entry) => entry.machineId === id),
+  };
+}
+
+function parseDraft(input: Json): Draft {
+  const fields = check.object(
+    input,
+    ["name", "shell", "price", "ticketCount", "nftPrizes", "usdgPrizes"],
+    [],
+    "The machine draft is invalid."
+  );
+  const name = check.string(fields.name, 28, "Machine name", NAME_PATTERN, "Use 3-28 plain characters for the name.");
+  const shell = check.oneOf(fields.shell, SHELLS, "Cabinet shell");
+  const priceText = check.string(fields.price, 16, "Pull price");
+  const price = parseUnits(priceText);
+  if (price === null || price < MIN_PRICE || price > MAX_PRICE) {
+    throw new GameError(`The pull price must be between 0.1 and 1,000 ${CURRENCY}.`);
+  }
+  const ticketCount = check.int(fields.ticketCount, MIN_TICKETS, MAX_TICKETS, "Tickets");
+
+  const rawNfts = fields.nftPrizes;
+  if (!Array.isArray(rawNfts) || rawNfts.length > MAX_NFT_PRIZES) {
+    throw new GameError(`A machine can stock up to ${MAX_NFT_PRIZES} Rare Friends.`);
+  }
+  const nftPrizes: DraftNft[] = [];
+  const seen = new Set<string>();
+  for (const value of rawNfts) {
+    const prize = check.object(value, ["tokenId", "item", "backing"], [], "A Rare Friend prize is invalid.");
+    const tokenId = check.string(prize.tokenId, 24, "Friend token", TOKEN_ID_PATTERN, "A Friend token id is invalid.");
+    if (seen.has(tokenId)) throw new GameError("A Rare Friend appears twice in the machine.");
+    seen.add(tokenId);
+    const item = check.oneOf(prize.item, ITEM_IDS, "Friend type");
+    const backing = parseUnits(check.string(prize.backing, 16, "Friend backing"));
+    if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) {
+      throw new GameError(`Friend backing must be between 0.1 and 10,000 ${CURRENCY}.`);
+    }
+    nftPrizes.push({ tokenId, item, backing: formatUnits(backing) });
   }
 
-  const next: Cabinet = { pulls: cabinet.pulls + 1, genesisWon, generationsWon };
-  ctx.data.set("cabinet", next);
-  ctx.leaderboard("pulls").submit(next.pulls);
+  const rawUsdg = fields.usdgPrizes;
+  if (!Array.isArray(rawUsdg) || rawUsdg.length > MAX_USDG_LINES) {
+    throw new GameError(`A machine can have up to ${MAX_USDG_LINES} USDG prize lines.`);
+  }
+  const usdgPrizes: DraftUsdg[] = [];
+  for (const value of rawUsdg) {
+    const prize = check.object(value, ["amount", "count"], [], "A USDG prize is invalid.");
+    const amount = parseUnits(check.string(prize.amount, 16, "USDG prize"));
+    if (amount === null || amount < MIN_BACKING) throw new GameError(`A USDG prize must be at least 0.1 ${CURRENCY}.`);
+    const count = check.int(prize.count, 1, MAX_PRIZE_COPIES, "Prize copies");
+    usdgPrizes.push({ amount: formatUnits(amount), count });
+  }
+
+  const draft: Draft = { name, shell, price: formatUnits(price), ticketCount, nftPrizes, usdgPrizes };
+  const quote = quoteDraft(draft);
+  if (quote.prizeTickets < 1) throw new GameError("Stock at least one prize.");
+  if (quote.prizeTickets > draft.ticketCount) throw new GameError("There are more prize tickets than tickets in the deck.");
+  if (unitsOf(quote.funding) > MAX_FUNDING) throw new GameError("That machine is too heavily stocked.");
+  if (quote.floorRtpBps < MIN_RTP_BPS || quote.floorRtpBps > MAX_RTP_BPS) {
+    throw new GameError(`The floor RTP must be between ${MIN_RTP_BPS / 100}% and ${MAX_RTP_BPS / 100}%.`);
+  }
+  return draft;
+}
+
+function activeMachineCount(ctx: AnyContext): number {
+  return readMachines(ctx).filter((machine) => machine.creatorId === ctx.friend.id && machine.status !== "cancelled").length;
+}
+
+function selectedMachine(ctx: AnyContext): Machine {
+  const selection = ctx.data.get<Snapshot["selection"]>(SELECTION_KEY);
+  if (!selection?.machineId) throw new GameError("Choose a machine first.");
+  const machine = machineOf(ctx, selection.machineId);
+  if (!machine) throw new GameError("That machine is not on the arcade floor.");
+  return machine;
+}
+
+function creatorMachine(ctx: AnyContext): Machine {
+  const machine = selectedMachine(ctx);
+  if (machine.creatorId !== ctx.friend.id) throw new GameError("Only this machine's creator can do that.");
+  return machine;
+}
+
+/**
+ * External handlers run on every state change. The deck position is the pull's
+ * identity: a pending event may carry only the state, and the settled event
+ * carries the prize. Count the pull from the state change, process the prize
+ * once, and never let a second report of the same position pay twice.
+ */
+function countPull(ctx: TransactionContext, machine: Machine, data: ArcadeEventData, newPull: boolean): Machine {
+  const share = creatorShareOf(unitsOf(machine.price));
+  let nextLifetime = machine.lifetimeReceipts;
+  let nextMachine = machine;
+
+  if (newPull) {
+    nextLifetime = formatUnits(unitsOf(nextLifetime) + share);
+    nextMachine = { ...machine, lifetimeReceipts: nextLifetime };
+    const me = readMe(ctx);
+    writeMe(ctx, { ...me, pulls: me.pulls + 1 });
+    const stats = readStats(ctx);
+    writeStats(ctx, { ...stats, pulls: stats.pulls + 1 });
+  }
+
+  const marker = `${PULL_PREFIX}${machine.id}:${data.ticketIndex ?? data.machine.pulled}`;
+  if (data.result === undefined || ctx.shared.get<boolean>(marker) === true) return nextMachine;
+  ctx.shared.set(marker, true);
+
+  const me = readMe(ctx);
+  let wins = me.wins;
+  let paid = readStats(ctx).paid;
+  let nftPrizes = machine.nftPrizes;
+  let usdgPrizes = machine.usdgPrizes;
+
+  if (data.result === "usdg" && data.amount) {
+    wins += 1;
+    paid = addAmount(paid, data.amount);
+    const units = unitsOf(data.amount);
+    if (units > 0n) ctx.leaderboard("biggestWin").submit(unitsNumber(units));
+    usdgPrizes = machine.usdgPrizes.map((prize) =>
+      prize.amount === data.amount && prize.won < prize.count ? { ...prize, won: prize.won + 1 } : prize
+    );
+    addRecent(ctx, {
+      machineId: machine.id,
+      machineName: machine.name,
+      playerId: ctx.friend.id,
+      generation: ctx.friend.generation,
+      kind: "usdg",
+      amount: data.amount,
+      at: ctx.now,
+    });
+  } else if (data.result === "nft" && data.tokenId && data.item && data.backing) {
+    wins += 1;
+    const units = unitsOf(data.backing);
+    if (units > 0n) ctx.leaderboard("biggestWin").submit(unitsNumber(units));
+    nftPrizes = machine.nftPrizes.map((prize) => (prize.tokenId === data.tokenId ? { ...prize, won: true } : prize));
+    storeClaim(ctx, {
+      machineId: machine.id,
+      machineName: machine.name,
+      tokenId: data.tokenId,
+      item: data.item,
+      backing: data.backing,
+      winnerId: ctx.friend.id,
+      winnerGeneration: ctx.friend.generation,
+      wonAt: ctx.now,
+      claimed: false,
+    });
+    addRecent(ctx, {
+      machineId: machine.id,
+      machineName: machine.name,
+      playerId: ctx.friend.id,
+      generation: ctx.friend.generation,
+      kind: "nft",
+      item: data.item,
+      tokenId: data.tokenId,
+      backing: data.backing,
+      at: ctx.now,
+    });
+  }
+
+  nextMachine = { ...nextMachine, nftPrizes, usdgPrizes };
+  writeMe(ctx, { ...readMe(ctx), wins });
+  writeStats(ctx, { ...readStats(ctx), paid });
+
+  if (newPull && ctx.friend.id === machine.creatorId) {
+    const me = readMe(ctx);
+    const total = formatUnits(unitsOf(me.lifetimeReceipts) + share);
+    writeMe(ctx, { ...me, lifetimeReceipts: total });
+    ctx.leaderboard("topCreator").submit(unitsNumber(unitsOf(total)));
+  }
+  return nextMachine;
 }
 
 export default defineGame({
   calls: {
-    /** Loaded by FriendSession alongside holdings() before the cabinet renders. */
+    /** FriendSession loads this together with holdings() before the floor renders. */
     load(ctx) {
-      return ctx.data.get<Cabinet>("cabinet") ?? EMPTY;
+      return snapshot(ctx);
+    },
+
+    /** Refresh the floor, the creator cabinet and the claim shelf. */
+    catalog(ctx) {
+      return snapshot(ctx);
+    },
+
+    /** One machine's full stock list and its unclaimed winners. */
+    machine(ctx, input) {
+      const fields = check.object(input, ["id"], [], "Choose a machine.");
+      const id = check.string(fields.id, 64, "Machine", /^[A-Za-z0-9:-]{1,64}$/);
+      return detail(ctx, id);
+    },
+
+    /** Validate the create wizard and keep its draft until the contract opens it. */
+    savedraft(ctx, input) {
+      const count = activeMachineCount(ctx);
+      if (count >= MAX_MACHINES_PER_CREATOR) {
+        throw new GameError(`You already have ${MAX_MACHINES_PER_CREATOR} machines on the floor.`);
+      }
+      const draft = parseDraft(input);
+      ctx.data.set(DRAFT_KEY, draft as unknown as JsonInput);
+      return quoteDraft(draft);
+    },
+
+    cleardraft(ctx) {
+      ctx.data.delete(DRAFT_KEY);
+      return null;
+    },
+
+    /** Point the next external action at one machine and, for a claim, one token. */
+    select(ctx, input) {
+      const fields = check.object(input, [], ["machineId", "tokenId"], "Choose a machine.");
+      const machineId =
+        fields.machineId === undefined ? undefined : check.string(fields.machineId, 64, "Machine", /^[A-Za-z0-9:-]{1,64}$/);
+      const tokenId =
+        fields.tokenId === undefined ? undefined : check.string(fields.tokenId, 24, "Friend token", TOKEN_ID_PATTERN);
+      if (machineId !== undefined && !machineOf(ctx, machineId)) {
+        throw new GameError("That machine is not on the arcade floor.");
+      }
+      if (tokenId !== undefined) {
+        const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + tokenId);
+        if (!claim || claim.winnerId !== ctx.friend.id || claim.claimed) {
+          throw new GameError("That Friend has no backing to claim.");
+        }
+        if (machineId !== undefined && claim.machineId !== machineId) {
+          throw new GameError("That Friend did not come from this machine.");
+        }
+      }
+      ctx.data.set(SELECTION_KEY, {
+        ...(machineId !== undefined && { machineId }),
+        ...(tokenId !== undefined && { tokenId }),
+      });
+      return null;
+    },
+  },
+
+  intents: {
+    createMachine(ctx) {
+      if (activeMachineCount(ctx) >= MAX_MACHINES_PER_CREATOR) {
+        throw new GameError(`You already have ${MAX_MACHINES_PER_CREATOR} machines on the floor.`);
+      }
+      const draft = ctx.data.get<Draft>(DRAFT_KEY);
+      if (!draft) throw new GameError("Build a machine before opening it.");
+      const quote = quoteDraft(draft);
+      if (quote.prizeTickets < 1) throw new GameError("Stock at least one prize.");
+      return { draft };
+    },
+
+    pull(ctx) {
+      const machine = selectedMachine(ctx);
+      if (machine.status !== "live") throw new GameError("That machine is not taking pulls.");
+      return { machineId: machine.id };
+    },
+
+    claimBacking(ctx) {
+      const selection = ctx.data.get<Snapshot["selection"]>(SELECTION_KEY);
+      if (!selection?.tokenId || !selection.machineId) throw new GameError("Choose a Friend to cash out.");
+      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + selection.tokenId);
+      if (!claim || claim.claimed || claim.winnerId !== ctx.friend.id || claim.machineId !== selection.machineId) {
+        throw new GameError("That backing is not yours to claim.");
+      }
+      return { machineId: claim.machineId, tokenId: claim.tokenId };
+    },
+
+    withdrawMachine(ctx) {
+      return { machineId: creatorMachine(ctx).id };
+    },
+
+    pauseMachine(ctx) {
+      return { machineId: creatorMachine(ctx).id };
+    },
+
+    resumeMachine(ctx) {
+      return { machineId: creatorMachine(ctx).id };
+    },
+
+    cancelMachine(ctx) {
+      return { machineId: creatorMachine(ctx).id };
     },
   },
 
   transactions: {
-    /** Runs once per settled pull, so the count cannot drift from the chain. */
-    pullStarter(ctx, tx) {
-      record(ctx, tx.items);
+    /** The contract opened a machine; mirror the draft and start the catalogue entry. */
+    createMachine(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (existing) {
+        const next = mergeState(existing, data.machine);
+        if (next !== existing) storeMachine(ctx, next);
+        return;
+      }
+      const draft = ctx.data.get<Draft>(DRAFT_KEY);
+      if (!draft) {
+        ctx.log(`createMachine ${data.machineId}: received without a draft.`);
+        return;
+      }
+      const quote = quoteDraft(draft);
+      const machine: Machine = {
+        id: data.machineId,
+        name: draft.name,
+        shell: draft.shell,
+        creatorId: ctx.friend.id,
+        creatorGeneration: ctx.friend.generation,
+        creatorFamily: ctx.friend.family.name,
+        price: draft.price,
+        ticketCount: draft.ticketCount,
+        pulled: data.machine.pulled,
+        status: data.machine.status,
+        nftPrizes: draft.nftPrizes.map((prize) => ({ ...prize, won: false })),
+        usdgPrizes: draft.usdgPrizes.map((prize) => ({ ...prize, won: 0 })),
+        prizeValue: quote.funding,
+        pool: data.machine.pool,
+        backingPool: data.machine.backingPool,
+        usdgPool: data.machine.usdgPool,
+        receipts: data.machine.receipts,
+        lifetimeReceipts: "0",
+        version: data.machine.version,
+        createdAt: ctx.now,
+      };
+      storeMachine(ctx, machine);
+      ctx.data.delete(DRAFT_KEY);
+
+      const me = readMe(ctx);
+      writeMe(ctx, { ...me, created: me.created + 1 });
+      const creators = readCreators(ctx);
+      if (!creators.includes(ctx.friend.id)) {
+        creators.push(ctx.friend.id);
+        ctx.shared.set(CREATORS_KEY, creators);
+      }
+      const stats = readStats(ctx);
+      writeStats(ctx, { ...stats, machines: stats.machines + 1, creators: creators.length });
     },
-    pullClassic(ctx, tx) {
-      record(ctx, tx.items);
+
+    /** A pull is one ticket. Count it once, then mirror the win. */
+    pull(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (!existing) return;
+      const newPull = data.machine.pulled > existing.pulled;
+      const merged = mergeState(existing, data.machine);
+      const machine = countPull(ctx, merged, data, newPull);
+      if (machine !== existing) storeMachine(ctx, machine);
     },
-    pullGrand(ctx, tx) {
-      record(ctx, tx.items);
+
+    /** The winner chose the money. Burn the claim and record the payout. */
+    claimBacking(ctx, tx) {
+      const data = eventData(tx);
+      if (!data?.tokenId) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (existing) {
+        const next = mergeState(existing, data.machine);
+        if (next !== existing) storeMachine(ctx, next);
+      }
+      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + data.tokenId);
+      if (!claim || claim.claimed) return;
+      const backing = claim.backing;
+      storeClaim(ctx, { ...claim, claimed: true });
+      const me = readMe(ctx);
+      writeMe(ctx, { ...me, claimed: addAmount(me.claimed, backing) });
+      const stats = readStats(ctx);
+      writeStats(ctx, { ...stats, paid: addAmount(stats.paid, backing) });
+    },
+
+    /** Creator receipts moved from the contract to the creator's wallet. */
+    withdrawMachine(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (!existing) return;
+      const next = mergeState(existing, data.machine);
+      if (next !== existing) storeMachine(ctx, next);
+      const me = readMe(ctx);
+      ctx.leaderboard("topCreator").submit(unitsNumber(unitsOf(me.lifetimeReceipts)));
+    },
+
+    pauseMachine(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (!existing) return;
+      const next = mergeState(existing, data.machine);
+      if (next !== existing) storeMachine(ctx, next);
+    },
+
+    resumeMachine(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (!existing) return;
+      const next = mergeState(existing, data.machine);
+      if (next !== existing) storeMachine(ctx, next);
+    },
+
+    /** Before its first pull a machine can be emptied. The refund is in tx.paid. */
+    cancelMachine(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      if (!existing) return;
+      const next = mergeState(existing, data.machine);
+      if (next !== existing) storeMachine(ctx, next);
     },
   },
 });
