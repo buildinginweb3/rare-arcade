@@ -14,10 +14,11 @@ import { PixelPullFx, type PullFxResultKind } from "../arcade/PixelPullFx.tsx";
 import { PlatformFeeVisual } from "../arcade/PlatformFeeVisual.tsx";
 import { soundFx } from "../lib/audio.ts";
 import {
+  ADDRESS_PATTERN,
   CURRENCY,
-  ITEM_NAMES,
   MAX_BACKING,
   MAX_FUNDING,
+  MAX_NFT_PRIZES,
   MAX_PRICE,
   MAX_PRIZE_COPIES,
   MAX_RTP_BPS,
@@ -27,10 +28,15 @@ import {
   MIN_RTP_BPS,
   MIN_TICKETS,
   NAME_PATTERN,
+  NFT_STANDARDS,
   SHELLS,
   STATUS_LABEL,
+  STANDARD_NAMES,
+  TOKEN_ID_PATTERN,
+  collectionName,
   displayUnits,
   groupAmount,
+  nftKey,
   parseUnits,
   quoteDraft,
   summarizeMachine,
@@ -38,9 +44,9 @@ import {
   type Claim,
   type Draft,
   type DraftQuote,
-  type ItemId,
   type MachineDetail,
   type MachineSummary,
+  type NftStandard,
   type RecentWin,
   type Snapshot,
   type TopEntry,
@@ -58,7 +64,7 @@ type Reveal = Readonly<{
   data: ArcadeEventData & { machineId: string };
 }>;
 
-type SelectInput = Readonly<{ machineId?: string; tokenId?: string }>;
+type SelectInput = Readonly<{ machineId?: string; claimId?: string }>;
 
 const DEFAULT_DRAFT: Draft = {
   name: "",
@@ -81,8 +87,8 @@ function draftOf(quote: DraftQuote | null): Draft {
   };
 }
 
-function itemName(item: ItemId): string {
-  return ITEM_NAMES[item];
+function nftName(contract: string, tokenId: string): string {
+  return `${collectionName(contract)} #${tokenId}`;
 }
 
 function scoreAmount(score: number): string {
@@ -154,7 +160,8 @@ export function Arcade({ ready, paused }: { ready: Ready<Snapshot>; paused: bool
         setNotice("Machine opened.");
         void refresh().then(() => setView({ kind: "machine", id }));
       }
-      if (transaction.action === "claimBacking") setNotice("Backing claimed. The Friend was burned.");
+      if (transaction.action === "keepPrize") setNotice("NFT kept. Its backing returned to the creator.");
+      if (transaction.action === "claimBacking") setNotice("Backing claimed. The NFT returned to its creator.");
       if (transaction.action === "withdrawMachine") setNotice("Creator receipts collected.");
       if (transaction.action === "pauseMachine") setNotice("Machine paused.");
       if (transaction.action === "resumeMachine") setNotice("Machine is taking pulls again.");
@@ -317,9 +324,11 @@ export function Arcade({ ready, paused }: { ready: Ready<Snapshot>; paused: bool
       {view.kind === "claims" ? (
         <ClaimsView
           claims={snapshot.claims}
-          available={holdings.actions.claimBacking?.available ?? false}
+          claimAvailable={holdings.actions.claimBacking?.available ?? false}
+          keepAvailable={holdings.actions.keepPrize?.available ?? false}
           busy={busy !== null || pending > 0}
-          onClaim={(claim) => void act("claimBacking", { machineId: claim.machineId, tokenId: claim.tokenId })}
+          onClaim={(claim) => void act("claimBacking", { machineId: claim.machineId, claimId: claim.id })}
+          onKeep={(claim) => void act("keepPrize", { machineId: claim.machineId, claimId: claim.id })}
           onOpen={openMachine}
         />
       ) : null}
@@ -499,7 +508,7 @@ function MachineCard({ machine, onOpen }: { machine: MachineSummary; onOpen: () 
           <span>FLOOR RTP {machine.floorRtpBps / 100}%</span>
         </div>
         <div className="machine-card-stats">
-          <span><PixelIcon name="prize" size={11} /> {machine.nftCount} FRIENDS</span>
+          <span><PixelIcon name="prize" size={11} /> {machine.nftCount} NFTS</span>
           <span><TokenIcon ticker={CURRENCY} size={11} decorative /> {groupAmount(machine.nftBacking)}</span>
           <span>TOP BACKING {groupAmount(machine.topBacking)}</span>
         </div>
@@ -513,8 +522,12 @@ function RecentRow({ entry }: { entry: RecentWin }) {
   return (
     <li className="recent-row">
       <span className="recent-kind">
-        {entry.kind === "nft" ? <PixelIcon name="friend" size={11} /> : <TokenIcon ticker={CURRENCY} size={11} decorative />}
-        {entry.kind === "nft" ? (entry.item ? itemName(entry.item) : "FRIEND") : `${groupAmount(entry.amount ?? "0")} ${CURRENCY}`}
+        {entry.kind === "nft" ? <PixelIcon name="prize" size={11} /> : <TokenIcon ticker={CURRENCY} size={11} decorative />}
+        {entry.kind === "nft"
+          ? entry.contract && entry.tokenId
+            ? nftName(entry.contract, entry.tokenId)
+            : "NFT"
+          : `${groupAmount(entry.amount ?? "0")} ${CURRENCY}`}
       </span>
       <span className="recent-machine">{entry.machineName}</span>
       <span className="recent-player">#{entry.playerId}</span>
@@ -676,16 +689,17 @@ function MachineView({
 
         <div className="machine-stock">
           <section className="floor-panel">
-            <h2 className="panel-title">RARE FRIENDS IN THE MACHINE</h2>
+            <h2 className="panel-title">NFTS IN THE MACHINE</h2>
             {machine.nftPrizes.length === 0 ? (
-              <p className="panel-empty">No Friends stocked.</p>
+              <p className="panel-empty">No NFTs stocked.</p>
             ) : (
               <ul className="stock-list">
                 {machine.nftPrizes.map((prize) => (
-                  <li key={prize.tokenId} className={`stock-row${prize.won ? " stock-row-won" : ""}`}>
-                    <PixelIcon name="friend" size={14} />
+                  <li key={nftKey(prize.contract, prize.tokenId)} className={`stock-row${prize.won ? " stock-row-won" : ""}`}>
+                    <PixelIcon name="prize" size={14} />
                     <span className="stock-name">
-                      {itemName(prize.item)} <span className="stock-id">#{prize.tokenId}</span>
+                      {nftName(prize.contract, prize.tokenId)}
+                      <span className="stock-id"> {STANDARD_NAMES[prize.standard]}</span>
                     </span>
                     <span className="stock-backing">{groupAmount(prize.backing)} {CURRENCY}</span>
                     <span className="stock-won">{prize.won ? "WON" : "IN STOCK"}</span>
@@ -753,7 +767,7 @@ function MachineView({
                     className="pixel-btn pixel-btn-sm"
                     disabled={busy !== null || pending}
                     onClick={() => {
-                      if (window.confirm("Cancel this machine? Every stocked Friend and all prize USDG go back to you.")) {
+                      if (window.confirm("Cancel this machine? Every stocked NFT and all prize USDG go back to your owner wallet.")) {
                         onCreator("cancelMachine");
                       }
                     }}
@@ -767,16 +781,17 @@ function MachineView({
           ) : null}
 
           <section className="floor-panel">
-            <h2 className="panel-title">UNCLAIMED BACKING</h2>
+            <h2 className="panel-title">UNCLAIMED WINS</h2>
             {detail.claims.length === 0 ? (
-              <p className="panel-empty">No unclaimed Friends from this machine.</p>
+              <p className="panel-empty">No unclaimed NFTs from this machine.</p>
             ) : (
               <ul className="stock-list">
                 {detail.claims.map((claim) => (
-                  <li key={claim.tokenId} className="stock-row">
-                    <PixelIcon name="friend" size={14} />
+                  <li key={claim.id} className="stock-row">
+                    <PixelIcon name="prize" size={14} />
                     <span className="stock-name">
-                      {itemName(claim.item)} <span className="stock-id">#{claim.tokenId}</span>
+                      {nftName(claim.contract, claim.tokenId)}
+                      <span className="stock-id"> {STANDARD_NAMES[claim.standard]}</span>
                     </span>
                     <span className="stock-backing">{groupAmount(claim.backing)} {CURRENCY}</span>
                   </li>
@@ -812,13 +827,13 @@ function RevealPanel({ reveal, onClose }: { reveal: Reveal; onClose: () => void 
   return (
     <div className="reveal-panel" role="status">
       <div className="reveal-headline">
-        {data.result === "nft" ? "A FRIEND!" : data.result === "usdg" ? "USDG PRIZE" : "NO PRIZE"}
+        {data.result === "nft" ? "AN NFT!" : data.result === "usdg" ? "USDG PRIZE" : "NO PRIZE"}
       </div>
       <div className="reveal-body">
-        {data.result === "nft" && data.item ? (
+        {data.result === "nft" && data.contract && data.tokenId ? (
           <p>
-            {itemName(data.item)} <span className="stock-id">#{data.tokenId}</span> is in your Friend wallet, backed by{" "}
-            {groupAmount(data.backing ?? "0")} {CURRENCY}. Keep it or claim the backing from CLAIMS.
+            {nftName(data.contract, data.tokenId)} is held in escrow, backed by{" "}
+            {groupAmount(data.backing ?? "0")} {CURRENCY}. Choose KEEP NFT or CLAIM BACKING from CLAIMS.
           </p>
         ) : data.result === "usdg" ? (
           <p>
@@ -837,15 +852,19 @@ function RevealPanel({ reveal, onClose }: { reveal: Reveal; onClose: () => void 
 
 function ClaimsView({
   claims,
-  available,
+  claimAvailable,
+  keepAvailable,
   busy,
   onClaim,
+  onKeep,
   onOpen,
 }: {
   claims: readonly Claim[];
-  available: boolean;
+  claimAvailable: boolean;
+  keepAvailable: boolean;
   busy: boolean;
   onClaim: (claim: Claim) => void;
+  onKeep: (claim: Claim) => void;
   onOpen: (id: string) => void;
 }) {
   return (
@@ -853,20 +872,24 @@ function ClaimsView({
       <div className="machine-view-head">
         <div>
           <h1 className="machine-title">YOUR CLAIMS</h1>
-          <p className="machine-sub">Backing is paid from the machine&apos;s escrow. Claiming burns the Friend.</p>
+          <p className="machine-sub">
+            Keep the NFT, or take its USDG backing. Keeping returns the backing to the creator; claiming returns the NFT.
+          </p>
         </div>
       </div>
       {claims.length === 0 ? (
-        <p className="panel-empty">No unclaimed Friends. Pull a machine or keep your winnings.</p>
+        <p className="panel-empty">No unclaimed NFTs. Pull a machine to win one.</p>
       ) : (
         <div className="claim-grid">
           {claims.map((claim) => (
-            <article className="claim-card" key={claim.tokenId}>
+            <article className="claim-card" key={claim.id}>
               <div className="claim-card-head">
-                <PixelIcon name="friend" size={18} />
+                <PixelIcon name="prize" size={18} />
                 <div>
-                  <div className="claim-card-name">{itemName(claim.item)}</div>
-                  <div className="claim-card-id">#{claim.tokenId} · {claim.machineName}</div>
+                  <div className="claim-card-name">{collectionName(claim.contract)}</div>
+                  <div className="claim-card-id">
+                    #{claim.tokenId} · {STANDARD_NAMES[claim.standard]} · {claim.machineName}
+                  </div>
                 </div>
               </div>
               <div className="claim-card-backing">
@@ -874,10 +897,13 @@ function ClaimsView({
                 <strong>{groupAmount(claim.backing)} {CURRENCY}</strong>
               </div>
               <p className="claim-card-note">
-                Claim the USDG and the Friend is burned. Keep the Friend in your wallet instead if you prefer.
+                Keep the NFT and its backing returns to the creator. Take the backing and the NFT returns to the creator.
               </p>
               <div className="claim-card-actions">
-                <button type="button" className="claim-button" disabled={!available || busy} onClick={() => onClaim(claim)}>
+                <button type="button" className="claim-button" disabled={!keepAvailable || busy} onClick={() => onKeep(claim)}>
+                  KEEP NFT
+                </button>
+                <button type="button" className="claim-button" disabled={!claimAvailable || busy} onClick={() => onClaim(claim)}>
                   CLAIM {groupAmount(claim.backing)} {CURRENCY}
                 </button>
                 <button type="button" className="link-button" onClick={() => onOpen(claim.machineId)}>
@@ -908,31 +934,57 @@ function CreateView({
   onBack: () => void;
 }) {
   const [draft, setDraft] = React.useState<Draft>(() => draftOf(snapshot.draft));
+  const [contract, setContract] = React.useState("");
+  const [tokenId, setTokenId] = React.useState("");
+  const [standard, setStandard] = React.useState<NftStandard>("erc721");
+  const [addError, setAddError] = React.useState<string | null>(null);
   const quote = React.useMemo(() => quoteDraft(draft), [draft]);
   const balance = holdings.currency ? parseUnits(holdings.currency.balance) ?? 0n : 0n;
   const funding = parseUnits(quote.funding) ?? 0n;
-  const tokens = (holdings.tokens ?? []).filter(
-    (token) => token.where === "friend" && (token.item === "genesisFriend" || token.item === "generationsFriend")
-  );
   const issues = draftIssues(draft, quote, balance);
 
-  const setPrize = (tokenId: string, backing: string) => {
+  const setPrize = (key: string, backing: string) => {
     setDraft((current) => ({
       ...current,
-      nftPrizes: current.nftPrizes.map((prize) => (prize.tokenId === tokenId ? { ...prize, backing } : prize)),
+      nftPrizes: current.nftPrizes.map((prize) =>
+        nftKey(prize.contract, prize.tokenId) === key ? { ...prize, backing } : prize
+      ),
     }));
   };
 
-  const toggleToken = (id: string, item: ItemId) => {
-    setDraft((current) => {
-      const exists = current.nftPrizes.some((prize) => prize.tokenId === id);
-      return {
-        ...current,
-        nftPrizes: exists
-          ? current.nftPrizes.filter((prize) => prize.tokenId !== id)
-          : [...current.nftPrizes, { tokenId: id, item, backing: "1" }],
-      };
-    });
+  const addNft = () => {
+    const nextContract = contract.trim().toLowerCase();
+    const nextTokenId = tokenId.trim();
+    if (!ADDRESS_PATTERN.test(nextContract)) {
+      setAddError("Enter the collection's 0x contract address.");
+      return;
+    }
+    if (!TOKEN_ID_PATTERN.test(nextTokenId)) {
+      setAddError("Enter the NFT's decimal token id.");
+      return;
+    }
+    if (draft.nftPrizes.some((prize) => nftKey(prize.contract, prize.tokenId) === nftKey(nextContract, nextTokenId))) {
+      setAddError("That NFT is already stocked.");
+      return;
+    }
+    if (draft.nftPrizes.length >= MAX_NFT_PRIZES) {
+      setAddError(`A machine can stock up to ${MAX_NFT_PRIZES} NFTs.`);
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      nftPrizes: [...current.nftPrizes, { contract: nextContract, tokenId: nextTokenId, standard, backing: "1" }],
+    }));
+    setContract("");
+    setTokenId("");
+    setAddError(null);
+  };
+
+  const removeNft = (key: string) => {
+    setDraft((current) => ({
+      ...current,
+      nftPrizes: current.nftPrizes.filter((prize) => nftKey(prize.contract, prize.tokenId) !== key),
+    }));
   };
 
   const setUsdg = (index: number, patch: Partial<{ amount: string; count: number }>) => {
@@ -1006,45 +1058,77 @@ function CreateView({
           </section>
 
           <section className="pixel-panel create-panel">
-            <h2 className="panel-title">RARE FRIENDS TO STOCK</h2>
+            <h2 className="panel-title">NFTS TO STOCK</h2>
             <p className="create-hint">
-              Pick Friends from your wallet. Each one gets a USDG backing; the winner keeps the Friend or claims the backing.
+              Stock any ERC-721 or ERC-1155 on Robinhood Chain with its contract and token id. The contract verifies
+              ownership and escrows it; the winner keeps the NFT or takes the USDG backing.
             </p>
-            {tokens.length === 0 ? (
-              <p className="panel-empty">No Rare Friends in this Friend&apos;s wallet.</p>
+            <div className="nft-add">
+              <label className="field">
+                <span>CONTRACT</span>
+                <input
+                  value={contract}
+                  spellCheck={false}
+                  placeholder="0x..."
+                  onChange={(event) => setContract(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>TOKEN ID</span>
+                <input
+                  value={tokenId}
+                  inputMode="numeric"
+                  spellCheck={false}
+                  placeholder="1"
+                  onChange={(event) => setTokenId(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>STANDARD</span>
+                <select value={standard} onChange={(event) => setStandard(event.target.value as NftStandard)}>
+                  {NFT_STANDARDS.map((value) => (
+                    <option key={value} value={value}>
+                      {STANDARD_NAMES[value]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="pixel-btn pixel-btn-sm" onClick={addNft}>
+                <PixelIcon name="plus" size={11} /> ADD NFT
+              </button>
+            </div>
+            {addError ? <p className="create-error">{addError}</p> : null}
+            {draft.nftPrizes.length === 0 ? (
+              <p className="panel-empty">No NFTs added yet. Stock at least one prize below.</p>
             ) : (
               <ul className="token-picker">
-                {tokens.map((token) => {
-                  const prize = draft.nftPrizes.find((entry) => entry.tokenId === token.id);
+                {draft.nftPrizes.map((prize) => {
+                  const key = nftKey(prize.contract, prize.tokenId);
                   return (
-                    <li key={token.id} className={`token-row${prize ? " token-row-selected" : ""}`}>
-                      <label className="token-check">
+                    <li key={key} className="token-row token-row-selected">
+                      <PixelIcon name="prize" size={16} />
+                      <span className="token-check">
+                        {nftName(prize.contract, prize.tokenId)}
+                        <span className="stock-id"> {STANDARD_NAMES[prize.standard]}</span>
+                      </span>
+                      <label className="token-backing">
+                        BACKING
                         <input
-                          type="checkbox"
-                          checked={Boolean(prize)}
-                          onChange={() => toggleToken(token.id, token.item as ItemId)}
+                          inputMode="decimal"
+                          value={prize.backing}
+                          onChange={(event) => setPrize(key, event.target.value)}
                         />
-                        <PixelIcon name="friend" size={16} />
-                        <span>
-                          {itemName(token.item as ItemId)} <span className="stock-id">#{token.id}</span>
-                        </span>
+                        {CURRENCY}
                       </label>
-                      {prize ? (
-                        <label className="token-backing">
-                          BACKING
-                          <input
-                            inputMode="decimal"
-                            value={prize.backing}
-                            onChange={(event) => setPrize(token.id, event.target.value)}
-                          />
-                          {CURRENCY}
-                        </label>
-                      ) : null}
+                      <button type="button" className="link-button" onClick={() => removeNft(key)}>
+                        <PixelIcon name="close" size={11} /> REMOVE
+                      </button>
                     </li>
                   );
                 })}
               </ul>
             )}
+            <p className="create-hint">Up to {MAX_NFT_PRIZES} NFTs per machine. Each entry is one NFT.</p>
           </section>
 
           <section className="pixel-panel create-panel">
@@ -1102,7 +1186,7 @@ function CreateView({
             <QuoteRow label="PLATFORM FEE / PULL" value={`${groupAmount(quote.feePerPull)} ${CURRENCY}`} />
             <QuoteRow label="YOU EARN / PULL" value={`${groupAmount(quote.creatorPerPull)} ${CURRENCY}`} />
             <div className="create-breakdown">
-              <span>FRIENDS {groupAmount(quote.nftBacking)}</span>
+              <span>NFTS {groupAmount(quote.nftBacking)}</span>
               <span>USDG {groupAmount(quote.usdgValue)}</span>
             </div>
             <PlatformFeeVisual ticker={CURRENCY} size={16} compact />
@@ -1115,7 +1199,7 @@ function CreateView({
               ))}
             </ul>
           ) : (
-            <p className="create-ready">READY. The contract will escrow the Friends and the USDG when you open it.</p>
+            <p className="create-ready">READY. The contract will escrow the NFTs and the USDG when you open it.</p>
           )}
 
           <button
@@ -1149,10 +1233,18 @@ function draftIssues(draft: Draft, quote: DraftQuote, balance: bigint): string[]
   if (draft.ticketCount < MIN_TICKETS || draft.ticketCount > MAX_TICKETS) {
     issues.push(`The deck needs ${MIN_TICKETS}-${MAX_TICKETS} tickets.`);
   }
+  if (draft.nftPrizes.length > MAX_NFT_PRIZES) issues.push(`A machine can stock up to ${MAX_NFT_PRIZES} NFTs.`);
+  const seen = new Set<string>();
   for (const prize of draft.nftPrizes) {
+    const key = nftKey(prize.contract, prize.tokenId);
+    if (!ADDRESS_PATTERN.test(prize.contract)) issues.push("Every NFT needs a valid 0x contract address.");
+    if (!TOKEN_ID_PATTERN.test(prize.tokenId)) issues.push("Every NFT needs a decimal token id.");
+    if (!NFT_STANDARDS.includes(prize.standard)) issues.push("Choose ERC-721 or ERC-1155 for every NFT.");
+    if (seen.has(key)) issues.push(`${nftName(prize.contract, prize.tokenId)} is stocked twice.`);
+    seen.add(key);
     const backing = parseUnits(prize.backing);
     if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) {
-      issues.push(`Backing for #${prize.tokenId} must be 0.1-10,000 ${CURRENCY}.`);
+      issues.push(`Backing for ${nftName(prize.contract, prize.tokenId)} must be 0.1-10,000 ${CURRENCY}.`);
     }
   }
   for (const line of draft.usdgPrizes) {

@@ -1633,6 +1633,10 @@ html, body {
   border-color: var(--color-gray-mid);
 }
 
+.claim-card-actions .claim-button {
+  margin-left: 0;
+}
+
 /* ==========================================================================
    CREATE
    ========================================================================== */
@@ -1678,6 +1682,7 @@ html, body {
 }
 
 .field input,
+.field select,
 .token-backing input,
 .usdg-row input {
   width: 100%;
@@ -1750,11 +1755,32 @@ html, body {
   min-width: 150px;
   font-family: var(--font-lcd);
   font-size: 9px;
-  cursor: pointer;
 }
 
 .token-check input {
   accent-color: var(--color-black);
+}
+
+.nft-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(90px, 0.7fr) minmax(110px, 0.8fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 2px solid var(--color-black);
+  background: var(--color-lcd-dim);
+}
+
+.nft-add .pixel-btn {
+  margin-bottom: 1px;
+}
+
+.create-error {
+  margin: 0;
+  font-family: var(--font-lcd);
+  font-size: 8px;
+  line-height: 1.6;
+  color: var(--color-black);
 }
 
 .token-backing {
@@ -1849,6 +1875,10 @@ html, body {
   .machine-layout,
   .create-layout {
     grid-template-columns: 1fr;
+  }
+
+  .nft-add {
+    grid-template-columns: 1fr 1fr;
   }
 
   .create-side {

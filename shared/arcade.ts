@@ -39,15 +39,49 @@ export const MAX_MACHINES_PER_CREATOR = 12;
 export const MAX_TOTAL_MACHINES = 120;
 
 export const NAME_PATTERN = /^[A-Za-z0-9 .,'!?&()/+:-]{3,28}$/;
-export const TOKEN_ID_PATTERN = /^[0-9]{1,24}$/;
+export const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+export const TOKEN_ID_PATTERN = /^(0|[1-9][0-9]{0,77})$/;
 
-export type ItemId = "genesisFriend" | "generationsFriend";
-export const ITEM_IDS: readonly ItemId[] = ["genesisFriend", "generationsFriend"];
+export const CHAIN_ID = 4663;
+export const RARE_FRIENDS_GENESIS = "0x116eaa62241751e0c98da43d458600c6c17cd361";
+export const RARE_FRIENDS_GENERATIONS = "0x14c49e6118f46525de9ab41a51cbaa3c6ebf181d";
 
-export const ITEM_NAMES: Readonly<Record<ItemId, string>> = {
-  genesisFriend: "Genesis Friend",
-  generationsFriend: "Generations Friend",
+const KNOWN_COLLECTIONS: Readonly<Record<string, string>> = {
+  [RARE_FRIENDS_GENESIS]: "Genesis Friend",
+  [RARE_FRIENDS_GENERATIONS]: "Generations Friend",
 };
+
+/** The manifest has one generic external item: any NFT on Robinhood Chain. */
+export type ItemId = "nft";
+export const ITEM_IDS: readonly ItemId[] = ["nft"];
+export const ITEM_NAMES: Readonly<Record<ItemId, string>> = { nft: "NFT" };
+
+export type NftStandard = "erc721" | "erc1155";
+export const NFT_STANDARDS: readonly NftStandard[] = ["erc721", "erc1155"];
+export const STANDARD_NAMES: Readonly<Record<NftStandard, string>> = {
+  erc721: "ERC-721",
+  erc1155: "ERC-1155",
+};
+
+export function isNftStandard(value: unknown): value is NftStandard {
+  return value === "erc721" || value === "erc1155";
+}
+
+export function nftKey(contract: string, tokenId: string): string {
+  return `${contract.toLowerCase()}:${tokenId}`;
+}
+
+export function claimIdOf(machineId: string, contract: string, tokenId: string): string {
+  return `${machineId}:${nftKey(contract, tokenId)}`;
+}
+
+export function shortAddress(address: string): string {
+  return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-4)}` : address;
+}
+
+export function collectionName(contract: string): string {
+  return KNOWN_COLLECTIONS[contract.toLowerCase()] ?? shortAddress(contract);
+}
 
 export type Shell = "classic" | "capsule" | "tallboy" | "mini";
 export const SHELLS: readonly Shell[] = ["classic", "capsule", "tallboy", "mini"];
@@ -61,9 +95,13 @@ export const STATUS_LABEL: Readonly<Record<MachineStatus, string>> = {
   cancelled: "CANCELLED",
 };
 
-export type PrizeNft = Readonly<{
+export type NftRef = Readonly<{
+  contract: string;
   tokenId: string;
-  item: ItemId;
+  standard: NftStandard;
+}>;
+
+export type PrizeNft = NftRef & Readonly<{
   backing: string;
   won: boolean;
 }>;
@@ -132,15 +170,18 @@ export type MachineSummary = Readonly<{
 }>;
 
 export type Claim = Readonly<{
+  id: string;
   machineId: string;
   machineName: string;
+  contract: string;
   tokenId: string;
-  item: ItemId;
+  standard: NftStandard;
   backing: string;
   winnerId: string;
   winnerGeneration: number;
   wonAt: number;
   claimed: boolean;
+  settledAs?: "kept" | "backing";
 }>;
 
 export type RecentWin = Readonly<{
@@ -150,15 +191,14 @@ export type RecentWin = Readonly<{
   generation: number;
   kind: "usdg" | "nft";
   amount?: string;
-  item?: ItemId;
+  contract?: string;
   tokenId?: string;
+  standard?: NftStandard;
   backing?: string;
   at: number;
 }>;
 
-export type DraftNft = Readonly<{
-  tokenId: string;
-  item: ItemId;
+export type DraftNft = NftRef & Readonly<{
   backing: string;
 }>;
 
@@ -207,7 +247,7 @@ export type Me = Readonly<{
 
 export type Selection = Readonly<{
   machineId?: string;
-  tokenId?: string;
+  claimId?: string;
 }>;
 
 export type TopEntry = Readonly<{
@@ -253,8 +293,9 @@ export type ArcadeEventData = Readonly<{
   ticketIndex?: number;
   amount?: string;
   backing?: string;
+  contract?: string;
   tokenId?: string;
-  item?: ItemId;
+  standard?: NftStandard;
   refund?: string;
   receipts?: string;
 }>;
@@ -263,7 +304,10 @@ export type ArcadeEventData = Readonly<{
 export type ArcadeIntent = Readonly<{
   draft?: Draft;
   machineId?: string;
+  claimId?: string;
+  contract?: string;
   tokenId?: string;
+  standard?: NftStandard;
 }>;
 
 export const EMPTY_ME: Me = {

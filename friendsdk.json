@@ -1,7 +1,7 @@
 {
   "id": "rare-arcade",
   "title": "Rare Arcade",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "client": "client/main.tsx",
   "server": "server/index.ts",
   "currency": "USDG",
@@ -11,14 +11,9 @@
     "fullscreenButton": true
   },
   "items": {
-    "genesisFriend": {
-      "name": "Genesis Friend",
-      "description": "A Genesis Rare Friend stocked inside a player-created prize machine. The winner keeps the Friend, or cashes out the USDG backing the creator attached to it.",
-      "lane": "arcade"
-    },
-    "generationsFriend": {
-      "name": "Generations Friend",
-      "description": "A Generations Rare Friend stocked inside a player-created prize machine. The winner keeps the Friend, or cashes out the USDG backing the creator attached to it.",
+    "nft": {
+      "name": "Robinhood NFT",
+      "description": "Any ERC-721 or ERC-1155 NFT on Robinhood Chain stocked inside a player-created prize machine. The winner keeps the NFT, or takes the USDG backing the creator attached to it.",
       "lane": "arcade"
     }
   },
@@ -27,21 +22,28 @@
       "type": "external",
       "lane": "arcade",
       "label": "Open a prize machine",
-      "description": "Stock a new machine with Rare Friends and USDG prizes, set its pull price and its finite ticket deck, and put it on the arcade floor. The creator receives 95% of every pull.",
+      "description": "Stock a new machine with any Robinhood Chain NFTs and USDG prizes, set its pull price and its finite ticket deck, and put it on the arcade floor. The creator receives 95% of every pull.",
       "maxQuantity": 1
     },
     "pull": {
       "type": "external",
       "lane": "arcade",
       "label": "Pull the lever",
-      "description": "One ticket from the selected machine's finite deck. Win a stocked Rare Friend, a USDG prize, or nothing. The platform keeps 5% of the pull.",
+      "description": "One ticket from the selected machine's finite deck. Win a stocked NFT, a USDG prize, or nothing. The platform keeps 5% of the pull.",
+      "maxQuantity": 1
+    },
+    "keepPrize": {
+      "type": "external",
+      "lane": "arcade",
+      "label": "Keep the NFT",
+      "description": "Keep a won NFT and move it to your Friend wallet. Its USDG backing returns to the machine creator.",
       "maxQuantity": 1
     },
     "claimBacking": {
       "type": "external",
       "lane": "arcade",
       "label": "Take the backing",
-      "description": "Burn a Friend won from a machine and take the USDG its creator attached to it. Keeping the Friend is always the other choice.",
+      "description": "Take the USDG backing a creator attached to a won NFT. The NFT returns to its creator instead of being burned.",
       "maxQuantity": 1
     },
     "withdrawMachine": {
@@ -69,7 +71,7 @@
       "type": "external",
       "lane": "arcade",
       "label": "Cancel machine",
-      "description": "Before its first pull, empty a machine: the USDG prize pool and backing are refunded and its Rare Friends return to your Friend wallet.",
+      "description": "Before its first pull, empty a machine: the USDG prize pool and backing are refunded and its NFTs return to your owner wallet.",
       "maxQuantity": 1
     }
   },
@@ -92,18 +94,15 @@
         "actions": {
           "createMachine": 1,
           "pull": 2,
-          "claimBacking": 3,
-          "withdrawMachine": 4,
-          "pauseMachine": 5,
-          "resumeMachine": 6,
-          "cancelMachine": 7
+          "keepPrize": 3,
+          "claimBacking": 4,
+          "withdrawMachine": 5,
+          "pauseMachine": 6,
+          "resumeMachine": 7,
+          "cancelMachine": 8
         },
         "classes": {
-          "genesisFriend": 1,
-          "generationsFriend": 2
-        },
-        "options": {
-          "demoFriends": 4
+          "nft": 1
         }
       }
     }

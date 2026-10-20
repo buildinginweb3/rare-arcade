@@ -28,8 +28,8 @@ import type {
   WatcherLane,
 } from "@rarefriends/friendsdk/keeper";
 import {
+  ADDRESS_PATTERN,
   CURRENCY,
-  ITEM_IDS,
   MAX_BACKING,
   MAX_FUNDING,
   MAX_NFT_PRIZES,
@@ -42,8 +42,11 @@ import {
   MAX_PRICE,
   MAX_RTP_BPS,
   NAME_PATTERN,
+  NFT_STANDARDS,
   SHELLS,
   TOKEN_ID_PATTERN,
+  claimIdOf,
+  collectionName,
   creatorShareOf,
   eventMachine,
   feeOf,
@@ -56,14 +59,13 @@ import {
   type DraftNft,
   type DraftUsdg,
   type EventMachine,
-  type ItemId,
   type Machine,
   type MachineStatus,
+  type NftStandard,
   type Shell,
 } from "../shared/arcade.ts";
 
 const ADAPTER = "arcade-v1";
-const DEMO_BASE = 900_000n;
 
 type Hash = `0x${string}`;
 type TokenOwner =
@@ -72,19 +74,21 @@ type TokenOwner =
   | Readonly<{ kind: "machine"; machineId: string }>;
 
 type HeldToken = Readonly<{
-  id: string;
-  item: ItemId;
+  contract: string;
+  tokenId: string;
+  standard: NftStandard;
   owner: TokenOwner;
 }>;
 
 type DeckEntry =
   | Readonly<{ kind: "blank" }>
   | Readonly<{ kind: "usdg"; amount: bigint }>
-  | Readonly<{ kind: "nft"; tokenId: string; item: ItemId; backing: bigint }>;
+  | Readonly<{ kind: "nft"; contract: string; tokenId: string; standard: NftStandard; backing: bigint }>;
 
 type NftPrize = Readonly<{
+  contract: string;
   tokenId: string;
-  item: ItemId;
+  standard: NftStandard;
   backing: bigint;
   won: boolean;
 }>;
@@ -96,9 +100,11 @@ type UsdgPrize = Readonly<{
 }>;
 
 type ClaimBack = Readonly<{
+  id: string;
   machineId: string;
+  contract: string;
   tokenId: string;
-  item: ItemId;
+  standard: NftStandard;
   backing: bigint;
   winnerId: string;
 }>;
@@ -155,20 +161,6 @@ type Op = Readonly<{
   event: PendingEvent;
 }>;
 
-type Options = Readonly<{
-  demoFriends: number;
-}>;
-
-const OPTIONS: Options = Object.freeze({ demoFriends: 4 });
-
-function parseOptions(raw: unknown): Options {
-  if (typeof raw !== "object" || raw === null) return OPTIONS;
-  const value = raw as Record<string, unknown>;
-  const demo = value.demoFriends;
-  if (typeof demo !== "number" || !Number.isInteger(demo) || demo < 0 || demo > 8) return OPTIONS;
-  return Object.freeze({ demoFriends: demo });
-}
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -183,8 +175,8 @@ function isShell(value: unknown): value is Shell {
   return typeof value === "string" && (SHELLS as readonly string[]).includes(value);
 }
 
-function isItem(value: unknown): value is ItemId {
-  return typeof value === "string" && (ITEM_IDS as readonly string[]).includes(value);
+function isStandard(value: unknown): value is NftStandard {
+  return typeof value === "string" && (NFT_STANDARDS as readonly string[]).includes(value);
 }
 
 function parseDraft(raw: unknown): Draft {
@@ -200,7 +192,7 @@ function parseDraft(raw: unknown): Draft {
     throw new Error("A machine needs 2-1,000 tickets.");
   }
   if (!Array.isArray(object.nftPrizes) || object.nftPrizes.length > MAX_NFT_PRIZES) {
-    throw new Error("A machine can stock up to 16 Rare Friends.");
+    throw new Error("A machine can stock up to 16 NFTs.");
   }
   if (!Array.isArray(object.usdgPrizes) || object.usdgPrizes.length > MAX_USDG_LINES) {
     throw new Error("A machine can have up to 8 USDG prize lines.");
@@ -209,14 +201,17 @@ function parseDraft(raw: unknown): Draft {
   const seen = new Set<string>();
   for (const rawPrize of object.nftPrizes) {
     const prize = asObject(rawPrize);
-    if (!prize) throw new Error("A Rare Friend prize is unreadable.");
+    if (!prize) throw new Error("An NFT prize is unreadable.");
+    const contract = typeof prize.contract === "string" ? prize.contract.toLowerCase() : "";
     const tokenId = typeof prize.tokenId === "string" ? prize.tokenId : "";
-    if (!TOKEN_ID_PATTERN.test(tokenId) || seen.has(tokenId)) throw new Error("A Rare Friend prize repeats a token.");
-    seen.add(tokenId);
-    if (!isItem(prize.item)) throw new Error("A Rare Friend prize has an unknown type.");
+    const key = `${contract}:${tokenId}`;
+    if (!ADDRESS_PATTERN.test(contract)) throw new Error("An NFT prize has an invalid contract address.");
+    if (!TOKEN_ID_PATTERN.test(tokenId) || seen.has(key)) throw new Error("An NFT prize repeats a token.");
+    seen.add(key);
+    if (!isStandard(prize.standard)) throw new Error("An NFT prize has an unknown standard.");
     const backing = parseUnits(prize.backing);
-    if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) throw new Error("A Friend backing is out of range.");
-    nftPrizes.push({ tokenId, item: prize.item, backing: formatUnits(backing) });
+    if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) throw new Error("An NFT backing is out of range.");
+    nftPrizes.push({ contract, tokenId, standard: prize.standard, backing: formatUnits(backing) });
   }
   const usdgPrizes: DraftUsdg[] = [];
   for (const rawPrize of object.usdgPrizes) {
@@ -251,9 +246,9 @@ function intentMachine(intent: ArcadeIntent): string {
   return intent.machineId;
 }
 
-function intentToken(intent: ArcadeIntent): string {
-  if (typeof intent.tokenId !== "string" || !TOKEN_ID_PATTERN.test(intent.tokenId)) throw new Error("Choose a Friend first.");
-  return intent.tokenId;
+function intentClaim(intent: ArcadeIntent): string {
+  if (typeof intent.claimId !== "string" || intent.claimId.length === 0) throw new Error("Choose a won NFT first.");
+  return intent.claimId;
 }
 
 function shuffle<T>(items: T[], seed: bigint): T[] {
@@ -277,15 +272,12 @@ function shuffle<T>(items: T[], seed: bigint): T[] {
   return items;
 }
 
-const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
-  const options = parseOptions(rawOptions);
+const stub: DevStubFactory = (sim: DevSimApi) => {
   const machines = new Map<string, InternalMachine>();
   const tokens = new Map<string, HeldToken>();
   const claims = new Map<string, ClaimBack>();
   const ops: Op[] = [];
-  const demoGranted = new Set<string>();
   let machineSeq = 0;
-  let demoSeq = 0;
   let opSeq = 0;
   let lanes = new Map<string, WatcherLane>();
 
@@ -301,8 +293,9 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
     pulled: machine.next,
     status: machine.status,
     nftPrizes: machine.nftPrizes.map((prize) => ({
+      contract: prize.contract,
       tokenId: prize.tokenId,
-      item: prize.item,
+      standard: prize.standard,
       backing: amountOf(prize.backing),
       won: prize.won,
     })),
@@ -323,30 +316,39 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
 
   const state = (machine: InternalMachine): EventMachine => eventMachine(publicMachine(machine));
 
-  const ensureDemo = (request: { friend: { id: string; wallet: string }; account: string }) => {
-    if (options.demoFriends === 0 || demoGranted.has(request.friend.id)) return;
-    demoGranted.add(request.friend.id);
-    const wallet = request.friend.wallet.toLowerCase();
-    const base = DEMO_BASE + BigInt(demoSeq) * 100n;
-    demoSeq += 1;
-    for (let index = 0; index < options.demoFriends; index += 1) {
-      const id = (base + BigInt(index + 1)).toString();
-      if (tokens.has(id)) continue;
-      const item: ItemId = index % 2 === 0 ? "genesisFriend" : "generationsFriend";
-      tokens.set(id, { id, item, owner: { kind: "friend", friendId: request.friend.id, wallet } });
-    }
-  };
-
   const heldBy = (token: HeldToken, wallet: string, account: string): "friend" | "owner" | null => {
     if (token.owner.kind === "friend" && token.owner.wallet === wallet) return "friend";
     if (token.owner.kind === "owner" && token.owner.account === account) return "owner";
     return null;
   };
 
-  const tokenHeldBy = (tokenId: string, wallet: string, account: string): HeldToken => {
-    const token = tokens.get(tokenId);
-    if (!token) throw new Error("That Rare Friend is not in this wallet.");
-    if (heldBy(token, wallet, account) === null) throw new Error("That Rare Friend is not in this wallet.");
+  const tokenKey = (contract: string, tokenId: string): string => `${contract.toLowerCase()}:${tokenId}`;
+
+  /**
+   * The dev contract simulates an owner wallet holding any NFT the creator names.
+   * The production contract checks the real collection and owner before escrow.
+   */
+  const checkStock = (prize: { contract: string; tokenId: string }, account: string): HeldToken | null => {
+    const existing = tokens.get(tokenKey(prize.contract, prize.tokenId));
+    if (existing && (existing.owner.kind !== "owner" || existing.owner.account !== account)) {
+      throw new Error("That NFT is not in your owner wallet.");
+    }
+    return existing ?? null;
+  };
+
+  const stockToken = (
+    prize: { contract: string; tokenId: string; standard: NftStandard },
+    account: string
+  ): HeldToken => {
+    const existing = checkStock(prize, account);
+    if (existing) return existing;
+    const token: HeldToken = {
+      contract: prize.contract.toLowerCase(),
+      tokenId: prize.tokenId,
+      standard: prize.standard,
+      owner: { kind: "owner", account },
+    };
+    tokens.set(tokenKey(prize.contract, prize.tokenId), token);
     return token;
   };
 
@@ -360,6 +362,13 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
     const machine = machineFor(intentMachine(intent));
     if (machine.creatorId !== friendId) throw new Error("Only the machine's creator can do that.");
     return machine;
+  };
+
+  const claimFor = (intent: ArcadeIntent, friendId: string): { claim: ClaimBack; machine: InternalMachine } => {
+    const claim = claims.get(intentClaim(intent));
+    if (!claim) throw new Error("That NFT is not in your claim shelf.");
+    if (claim.winnerId !== friendId) throw new Error("That NFT was not won by this Friend.");
+    return { claim, machine: machineFor(claim.machineId) };
   };
 
   const push = (op: Omit<Op, "id">): Hash => {
@@ -376,21 +385,14 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
     if (action === "createMachine") {
       const draft = parseDraft(intent.draft);
       const quote = quoteDraft(draft);
-      const wallet = request.friend.wallet.toLowerCase();
       const account = request.account.toLowerCase();
-      const seen = new Set<string>();
-      for (const prize of draft.nftPrizes) {
-        if (seen.has(prize.tokenId)) throw new Error("A Rare Friend prize repeats a token.");
-        seen.add(prize.tokenId);
-        const token = tokenHeldBy(prize.tokenId, wallet, account);
-        if (token.item !== prize.item) throw new Error("A Rare Friend prize has the wrong type.");
-      }
+      for (const prize of draft.nftPrizes) checkStock(prize, account);
       const funding = parseUnits(quote.funding) ?? 0n;
       const lines = [
         { label: "Machine", value: draft.name },
         { label: "Pull price", value: `${draft.price} ${CURRENCY}` },
         { label: "Tickets", value: `${draft.ticketCount} (${quote.prizeTickets} carry prizes)` },
-        { label: "Rare Friends", value: `${draft.nftPrizes.length} stocked, ${quote.nftBacking} ${CURRENCY} backing` },
+        { label: "NFTs", value: `${draft.nftPrizes.length} stocked, ${quote.nftBacking} ${CURRENCY} backing` },
         { label: "USDG prizes", value: `${quote.usdgValue} ${CURRENCY}` },
         { label: "Floor RTP", value: `${(quote.floorRtpBps / 100).toFixed(2)}%` },
         { label: "Creator share", value: `${quote.creatorPerPull} ${CURRENCY} of each pull` },
@@ -417,19 +419,23 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       };
     }
 
-    if (action === "claimBacking") {
-      const tokenId = intentToken(intent);
-      const claim = claims.get(tokenId);
-      if (!claim) throw new Error("That Friend has no backing to claim.");
-      if (claim.winnerId !== request.friend.id) throw new Error("That Friend was not won by this Friend.");
-      const machine = machineFor(claim.machineId);
+    if (action === "keepPrize" || action === "claimBacking") {
+      const { claim, machine } = claimFor(intent, request.friend.id);
       if (machine.backingPool < claim.backing) throw new Error("The machine's backing pool is short.");
+      const nft = `${collectionName(claim.contract)} #${claim.tokenId}`;
       return {
         lines: [
-          { label: "Rare Friend", value: `Token #${tokenId}` },
+          { label: "NFT", value: nft },
           { label: "Machine", value: machine.name },
-          { label: "You receive", value: `${amountOf(claim.backing)} ${CURRENCY}` },
-          { label: "The Friend", value: "is burned when you take the backing" },
+          ...(action === "keepPrize"
+            ? [
+                { label: "You keep", value: nft },
+                { label: "Creator receives", value: `${amountOf(claim.backing)} ${CURRENCY} backing` },
+              ]
+            : [
+                { label: "You receive", value: `${amountOf(claim.backing)} ${CURRENCY}` },
+                { label: "The NFT", value: "returns to the creator's owner wallet" },
+              ]),
         ],
       };
     }
@@ -462,7 +468,7 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
         lines: [
           { label: "Machine", value: machine.name },
           { label: "USDG refund", value: `${amountOf(refund)} ${CURRENCY}` },
-          { label: "Rare Friends", value: `${machine.nftPrizes.length} return to your Friend wallet` },
+          { label: "NFTs", value: `${machine.nftPrizes.length} return to your owner wallet` },
         ],
       };
     }
@@ -491,20 +497,20 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       const backing = parseUnits(quote.nftBacking) ?? 0n;
       const usdg = parseUnits(quote.usdgValue) ?? 0n;
       if (sim.balance(account) < funding) throw new Error(`Not enough ${CURRENCY} to stock this machine.`);
-      for (const prize of draft.nftPrizes) tokenHeldBy(prize.tokenId, wallet, account);
       sim.debit(account, funding);
       machineSeq += 1;
       const id = `m:${machineSeq}`;
       for (const prize of draft.nftPrizes) {
-        const token = tokens.get(prize.tokenId);
-        if (token) tokens.set(prize.tokenId, { ...token, owner: { kind: "machine", machineId: id } });
+        const token = stockToken(prize, account);
+        tokens.set(tokenKey(token.contract, token.tokenId), { ...token, owner: { kind: "machine", machineId: id } });
       }
       const prizeEntries: DeckEntry[] = [];
       for (const prize of draft.nftPrizes) {
         prizeEntries.push({
           kind: "nft",
+          contract: prize.contract,
           tokenId: prize.tokenId,
-          item: prize.item,
+          standard: prize.standard,
           backing: parseUnits(prize.backing) ?? 0n,
         });
       }
@@ -531,8 +537,9 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
         next: 0,
         status: "live",
         nftPrizes: draft.nftPrizes.map((prize) => ({
+          contract: prize.contract,
           tokenId: prize.tokenId,
-          item: prize.item,
+          standard: prize.standard,
           backing: parseUnits(prize.backing) ?? 0n,
           won: false,
         })),
@@ -585,7 +592,12 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       let result: "blank" | "usdg" | "nft" = "blank";
       const data: ArcadeEventData = { machineId: machine.id, machine: state(machine), ticketIndex };
       const event: PendingEvent = { status: "settled", hash, data };
-      const mutable = event as { paid?: string; paidTo?: "friend" | "owner"; outcomes?: { row: number; item?: ItemId; pays?: string }[]; tokens?: { moved?: { id: string; item: ItemId; to: "friend" | "owner" }[] } };
+      const mutable = event as {
+        paid?: string;
+        paidTo?: "friend" | "owner";
+        outcomes?: { row: number; item?: string; pays?: string }[];
+        tokens?: { moved?: { id: string; item: string; to: "friend" | "owner" }[] };
+      };
 
       if (entry.kind === "usdg") {
         result = "usdg";
@@ -600,22 +612,25 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       } else if (entry.kind === "nft") {
         result = "nft";
         machine.nftPrizes = machine.nftPrizes.map((candidate) =>
-          candidate.tokenId === entry.tokenId ? { ...candidate, won: true } : candidate
+          candidate.contract === entry.contract && candidate.tokenId === entry.tokenId
+            ? { ...candidate, won: true }
+            : candidate
         );
-        const token = tokens.get(entry.tokenId);
-        if (token) tokens.set(entry.tokenId, { ...token, owner: { kind: "friend", friendId: request.friend.id, wallet } });
-        claims.set(entry.tokenId, {
+        const id = claimIdOf(machine.id, entry.contract, entry.tokenId);
+        claims.set(id, {
+          id,
           machineId: machine.id,
+          contract: entry.contract,
           tokenId: entry.tokenId,
-          item: entry.item,
+          standard: entry.standard,
           backing: entry.backing,
           winnerId: request.friend.id,
         });
-        mutable.tokens = { moved: [{ id: entry.tokenId, item: entry.item, to: "friend" }] };
-        mutable.outcomes = [{ row: ticketIndex, item: entry.item }];
+        mutable.outcomes = [{ row: ticketIndex, item: "nft" }];
         (data as { result?: string }).result = result;
+        (data as { contract?: string }).contract = entry.contract;
         (data as { tokenId?: string }).tokenId = entry.tokenId;
-        (data as { item?: ItemId }).item = entry.item;
+        (data as { standard?: NftStandard }).standard = entry.standard;
         (data as { backing?: string }).backing = amountOf(entry.backing);
       } else {
         (data as { result?: string }).result = result;
@@ -634,23 +649,65 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       return { hash };
     }
 
-    if (action === "claimBacking") {
-      const tokenId = intentToken(intent);
-      const claim = claims.get(tokenId);
-      if (!claim || claim.winnerId !== request.friend.id) throw new Error("That Friend has no backing from this Friend.");
-      const machine = machineFor(claim.machineId);
+    if (action === "keepPrize") {
+      const { claim, machine } = claimFor(intent, request.friend.id);
       if (machine.backingPool < claim.backing) throw new Error("The machine's backing pool is short.");
-      const result = tokenHeldBy(tokenId, wallet, account);
+      const key = tokenKey(claim.contract, claim.tokenId);
+      const token = tokens.get(key);
+      if (!token || token.owner.kind !== "machine" || token.owner.machineId !== machine.id) {
+        throw new Error("That NFT is not in the machine's escrow.");
+      }
       machine.backingPool -= claim.backing;
+      machine.receipts += claim.backing;
+      machine.lifetimeReceipts += claim.backing;
       machine.version += 1;
-      sim.credit(account, claim.backing);
-      tokens.delete(tokenId);
-      claims.delete(tokenId);
+      tokens.set(key, { ...token, owner: { kind: "friend", friendId: request.friend.id, wallet } });
+      claims.delete(claim.id);
       const data: ArcadeEventData = {
         machineId: machine.id,
         machine: state(machine),
-        tokenId,
-        item: claim.item,
+        contract: claim.contract,
+        tokenId: claim.tokenId,
+        standard: claim.standard,
+        backing: amountOf(claim.backing),
+      };
+      push({
+        laneKey: request.lane.key,
+        action,
+        hash,
+        friendId: request.friend.id,
+        wallet,
+        generation: request.friend.generation,
+        quantity: request.quantity,
+        event: {
+          status: "settled",
+          hash,
+          data,
+          tokens: { moved: [{ id: claim.tokenId, item: "nft", to: "friend" }] },
+        },
+      });
+      return { hash };
+    }
+
+    if (action === "claimBacking") {
+      const { claim, machine } = claimFor(intent, request.friend.id);
+      if (machine.backingPool < claim.backing) throw new Error("The machine's backing pool is short.");
+      const key = tokenKey(claim.contract, claim.tokenId);
+      const token = tokens.get(key);
+      if (!token || token.owner.kind !== "machine" || token.owner.machineId !== machine.id) {
+        throw new Error("That NFT is not in the machine's escrow.");
+      }
+      machine.backingPool -= claim.backing;
+      machine.version += 1;
+      sim.credit(account, claim.backing);
+      tokens.set(key, { ...token, owner: { kind: "owner", account: machine.creatorAccount } });
+      claims.delete(claim.id);
+      const data: ArcadeEventData = {
+        machineId: machine.id,
+        machine: state(machine),
+        contract: claim.contract,
+        tokenId: claim.tokenId,
+        standard: claim.standard,
         backing: amountOf(claim.backing),
       };
       push({
@@ -667,7 +724,7 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
           data,
           paid: claim.backing.toString(),
           paidTo: "owner",
-          tokens: { burned: [{ id: result.id, item: result.item }] },
+          tokens: { moved: [{ id: claim.tokenId, item: "nft", to: "owner" }] },
         },
       });
       return { hash };
@@ -724,12 +781,13 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
       if (machine.status === "cancelled") throw new Error("That machine is already cancelled.");
       const refund = machine.backingPool + machine.usdgPool;
       sim.credit(account, refund);
-      const moved: { id: string; item: ItemId; to: "friend" }[] = [];
+      const moved: { id: string; item: string; to: "friend" | "owner" }[] = [];
       for (const prize of machine.nftPrizes) {
-        const token = tokens.get(prize.tokenId);
+        const key = tokenKey(prize.contract, prize.tokenId);
+        const token = tokens.get(key);
         if (token) {
-          tokens.set(prize.tokenId, { ...token, owner: { kind: "friend", friendId: request.friend.id, wallet } });
-          moved.push({ id: prize.tokenId, item: prize.item, to: "friend" });
+          tokens.set(key, { ...token, owner: { kind: "owner", account: machine.creatorAccount } });
+          moved.push({ id: prize.tokenId, item: "nft", to: "owner" });
         }
       }
       machine.backingPool = 0n;
@@ -766,17 +824,16 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
 
   const relay: DevRelay = {
     async holdings(request) {
-      ensureDemo(request);
       const wallet = request.friend.wallet.toLowerCase();
       const account = request.account.toLowerCase();
-      const held: { id: string; item: ItemId; lane: string; where: "friend" | "owner" }[] = [];
+      const held: { id: string; item: string; lane: string; where: "friend" | "owner" }[] = [];
       for (const token of tokens.values()) {
         const where = heldBy(token, wallet, account);
-        if (where) held.push({ id: token.id, item: token.item, lane: request.lane.key, where });
+        if (where) held.push({ id: token.tokenId, item: "nft", lane: request.lane.key, where });
       }
       const mine = [...machines.values()].filter((machine) => machine.creatorId === request.friend.id && machine.status !== "cancelled");
       const hasLive = [...machines.values()].some((machine) => machine.status === "live" && machine.next < machine.ticketCount);
-      const hasClaim = held.some((token) => token.where === "friend" && claims.has(token.id));
+      const hasClaim = [...claims.values()].some((claim) => claim.winnerId === request.friend.id);
       return {
         tokens: held,
         actions: {
@@ -784,6 +841,9 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
           pull: hasLive
             ? { available: true, maxQuantity: 1 }
             : { available: false, maxQuantity: 0, reason: "No live machine is on the floor." },
+          keepPrize: hasClaim
+            ? { available: true, maxQuantity: 1 }
+            : { available: false, maxQuantity: 0, reason: "No won NFT to keep." },
           claimBacking: hasClaim
             ? { available: true, maxQuantity: 1 }
             : { available: false, maxQuantity: 0, reason: "No backing to claim." },
@@ -840,6 +900,12 @@ const stub: DevStubFactory = (sim: DevSimApi, rawOptions?: unknown) => {
   const watcher: Watcher = {
     adapter: ADAPTER,
     init(ctx: WatcherInit) {
+      machines.clear();
+      tokens.clear();
+      claims.clear();
+      ops.length = 0;
+      machineSeq = 0;
+      opSeq = 0;
       lanes = new Map(ctx.lanes.map((lane) => [lane.key, lane]));
       ctx.log("info", `Rare Arcade dev contract: serving ${ctx.lanes.length} lane(s), ${machines.size} machine(s).`);
     },

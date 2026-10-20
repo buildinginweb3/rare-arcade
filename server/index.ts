@@ -24,10 +24,10 @@ import {
   type TransactionContext,
 } from "@rarefriends/friendsdk/server";
 import {
+  ADDRESS_PATTERN,
   CURRENCY,
   EMPTY_ME,
   EMPTY_STATS,
-  ITEM_IDS,
   MAX_BACKING,
   MAX_FUNDING,
   MAX_MACHINES_PER_CREATOR,
@@ -43,10 +43,14 @@ import {
   MIN_RTP_BPS,
   MIN_TICKETS,
   NAME_PATTERN,
+  NFT_STANDARDS,
   SHELLS,
   TOKEN_ID_PATTERN,
+  claimIdOf,
   creatorShareOf,
   formatUnits,
+  isNftStandard,
+  nftKey,
   parseUnits,
   quoteDraft,
   summarizeMachine,
@@ -60,6 +64,7 @@ import {
   type Machine,
   type MachineDetail,
   type Me,
+  type NftStandard,
   type RecentWin,
   type Snapshot,
   type Stats,
@@ -140,18 +145,18 @@ function storeMachine(ctx: AnyContext, machine: Machine): void {
 
 function readClaims(ctx: AnyContext): Claim[] {
   const claims: Claim[] = [];
-  for (const tokenId of readClaimIndex(ctx)) {
-    const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + tokenId);
+  for (const id of readClaimIndex(ctx)) {
+    const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + id);
     if (claim) claims.push(claim);
   }
   return claims;
 }
 
 function storeClaim(ctx: AnyContext, claim: Claim): void {
-  ctx.shared.set(CLAIM_PREFIX + claim.tokenId, claim as unknown as JsonInput);
+  ctx.shared.set(CLAIM_PREFIX + claim.id, claim as unknown as JsonInput);
   const index = readClaimIndex(ctx);
-  if (!index.includes(claim.tokenId)) {
-    index.unshift(claim.tokenId);
+  if (!index.includes(claim.id)) {
+    index.unshift(claim.id);
     ctx.shared.set(CLAIMS_KEY, index);
   }
 }
@@ -187,6 +192,10 @@ function eventData(tx: Transaction): ArcadeEventData | null {
 
 function unitsOf(amount: string | undefined): bigint {
   return parseUnits(amount ?? "0") ?? 0n;
+}
+
+function nftStandardOf(value: unknown): NftStandard | null {
+  return isNftStandard(value) ? value : null;
 }
 
 function addAmount(left: string | undefined, right: string | undefined): string {
@@ -244,21 +253,25 @@ function parseDraft(input: Json): Draft {
 
   const rawNfts = fields.nftPrizes;
   if (!Array.isArray(rawNfts) || rawNfts.length > MAX_NFT_PRIZES) {
-    throw new GameError(`A machine can stock up to ${MAX_NFT_PRIZES} Rare Friends.`);
+    throw new GameError(`A machine can stock up to ${MAX_NFT_PRIZES} NFTs.`);
   }
   const nftPrizes: DraftNft[] = [];
   const seen = new Set<string>();
   for (const value of rawNfts) {
-    const prize = check.object(value, ["tokenId", "item", "backing"], [], "A Rare Friend prize is invalid.");
-    const tokenId = check.string(prize.tokenId, 24, "Friend token", TOKEN_ID_PATTERN, "A Friend token id is invalid.");
-    if (seen.has(tokenId)) throw new GameError("A Rare Friend appears twice in the machine.");
-    seen.add(tokenId);
-    const item = check.oneOf(prize.item, ITEM_IDS, "Friend type");
-    const backing = parseUnits(check.string(prize.backing, 16, "Friend backing"));
+    const prize = check.object(value, ["contract", "tokenId", "standard", "backing"], [], "An NFT prize is invalid.");
+    const contract = check
+      .string(prize.contract, 42, "NFT contract", ADDRESS_PATTERN, "Use the NFT contract's 0x address.")
+      .toLowerCase();
+    const tokenId = check.string(prize.tokenId, 78, "NFT token", TOKEN_ID_PATTERN, "Use a decimal NFT token id.");
+    const key = nftKey(contract, tokenId);
+    if (seen.has(key)) throw new GameError("That NFT appears twice in the machine.");
+    seen.add(key);
+    const standard = check.oneOf(prize.standard, NFT_STANDARDS, "NFT standard");
+    const backing = parseUnits(check.string(prize.backing, 16, "NFT backing"));
     if (backing === null || backing < MIN_BACKING || backing > MAX_BACKING) {
-      throw new GameError(`Friend backing must be between 0.1 and 10,000 ${CURRENCY}.`);
+      throw new GameError(`NFT backing must be between 0.1 and 10,000 ${CURRENCY}.`);
     }
-    nftPrizes.push({ tokenId, item, backing: formatUnits(backing) });
+    nftPrizes.push({ contract, tokenId, standard, backing: formatUnits(backing) });
   }
 
   const rawUsdg = fields.usdgPrizes;
@@ -354,33 +367,42 @@ function countPull(ctx: TransactionContext, machine: Machine, data: ArcadeEventD
       amount: data.amount,
       at: ctx.now,
     });
-  } else if (data.result === "nft" && data.tokenId && data.item && data.backing) {
-    wins += 1;
-    const units = unitsOf(data.backing);
-    if (units > 0n) ctx.leaderboard("biggestWin").submit(unitsNumber(units));
-    nftPrizes = machine.nftPrizes.map((prize) => (prize.tokenId === data.tokenId ? { ...prize, won: true } : prize));
-    storeClaim(ctx, {
-      machineId: machine.id,
-      machineName: machine.name,
-      tokenId: data.tokenId,
-      item: data.item,
-      backing: data.backing,
-      winnerId: ctx.friend.id,
-      winnerGeneration: ctx.friend.generation,
-      wonAt: ctx.now,
-      claimed: false,
-    });
-    addRecent(ctx, {
-      machineId: machine.id,
-      machineName: machine.name,
-      playerId: ctx.friend.id,
-      generation: ctx.friend.generation,
-      kind: "nft",
-      item: data.item,
-      tokenId: data.tokenId,
-      backing: data.backing,
-      at: ctx.now,
-    });
+  } else if (data.result === "nft" && data.contract && data.tokenId && data.backing) {
+    const standard = nftStandardOf(data.standard);
+    if (standard) {
+      wins += 1;
+      const units = unitsOf(data.backing);
+      if (units > 0n) ctx.leaderboard("biggestWin").submit(unitsNumber(units));
+      const wonKey = nftKey(data.contract, data.tokenId);
+      nftPrizes = machine.nftPrizes.map((prize) =>
+        nftKey(prize.contract, prize.tokenId) === wonKey ? { ...prize, won: true } : prize
+      );
+      storeClaim(ctx, {
+        id: claimIdOf(machine.id, data.contract, data.tokenId),
+        machineId: machine.id,
+        machineName: machine.name,
+        contract: data.contract,
+        tokenId: data.tokenId,
+        standard,
+        backing: data.backing,
+        winnerId: ctx.friend.id,
+        winnerGeneration: ctx.friend.generation,
+        wonAt: ctx.now,
+        claimed: false,
+      });
+      addRecent(ctx, {
+        machineId: machine.id,
+        machineName: machine.name,
+        playerId: ctx.friend.id,
+        generation: ctx.friend.generation,
+        kind: "nft",
+        contract: data.contract,
+        tokenId: data.tokenId,
+        standard,
+        backing: data.backing,
+        at: ctx.now,
+      });
+    }
   }
 
   nextMachine = { ...nextMachine, nftPrizes, usdgPrizes };
@@ -394,6 +416,22 @@ function countPull(ctx: TransactionContext, machine: Machine, data: ArcadeEventD
     ctx.leaderboard("topCreator").submit(unitsNumber(unitsOf(total)));
   }
   return nextMachine;
+}
+
+function claimIntent(ctx: CallContext) {
+  const selection = ctx.data.get<Snapshot["selection"]>(SELECTION_KEY);
+  if (!selection?.claimId) throw new GameError("Choose a won NFT first.");
+  const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + selection.claimId);
+  if (!claim || claim.claimed || claim.winnerId !== ctx.friend.id) {
+    throw new GameError("That won NFT is not yours to settle.");
+  }
+  return {
+    machineId: claim.machineId,
+    claimId: claim.id,
+    contract: claim.contract,
+    tokenId: claim.tokenId,
+    standard: claim.standard,
+  };
 }
 
 export default defineGame({
@@ -434,28 +472,30 @@ export default defineGame({
       return null;
     },
 
-    /** Point the next external action at one machine and, for a claim, one token. */
+    /** Point the next external action at one machine and, for a claim, one won NFT. */
     select(ctx, input) {
-      const fields = check.object(input, [], ["machineId", "tokenId"], "Choose a machine.");
+      const fields = check.object(input, [], ["machineId", "claimId"], "Choose a machine.");
       const machineId =
         fields.machineId === undefined ? undefined : check.string(fields.machineId, 64, "Machine", /^[A-Za-z0-9:-]{1,64}$/);
-      const tokenId =
-        fields.tokenId === undefined ? undefined : check.string(fields.tokenId, 24, "Friend token", TOKEN_ID_PATTERN);
+      const claimId =
+        fields.claimId === undefined
+          ? undefined
+          : check.string(fields.claimId, 200, "Claim", /^[A-Za-z0-9:._-]{1,200}$/);
       if (machineId !== undefined && !machineOf(ctx, machineId)) {
         throw new GameError("That machine is not on the arcade floor.");
       }
-      if (tokenId !== undefined) {
-        const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + tokenId);
+      if (claimId !== undefined) {
+        const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + claimId);
         if (!claim || claim.winnerId !== ctx.friend.id || claim.claimed) {
-          throw new GameError("That Friend has no backing to claim.");
+          throw new GameError("That NFT is not on your claim shelf.");
         }
         if (machineId !== undefined && claim.machineId !== machineId) {
-          throw new GameError("That Friend did not come from this machine.");
+          throw new GameError("That NFT did not come from this machine.");
         }
       }
       ctx.data.set(SELECTION_KEY, {
         ...(machineId !== undefined && { machineId }),
-        ...(tokenId !== undefined && { tokenId }),
+        ...(claimId !== undefined && { claimId }),
       });
       return null;
     },
@@ -482,14 +522,12 @@ export default defineGame({
       return { machineId: machine.id };
     },
 
+    keepPrize(ctx) {
+      return claimIntent(ctx);
+    },
+
     claimBacking(ctx) {
-      const selection = ctx.data.get<Snapshot["selection"]>(SELECTION_KEY);
-      if (!selection?.tokenId || !selection.machineId) throw new GameError("Choose a Friend to cash out.");
-      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + selection.tokenId);
-      if (!claim || claim.claimed || claim.winnerId !== ctx.friend.id || claim.machineId !== selection.machineId) {
-        throw new GameError("That backing is not yours to claim.");
-      }
-      return { machineId: claim.machineId, tokenId: claim.tokenId };
+      return claimIntent(ctx);
     },
 
     withdrawMachine(ctx) {
@@ -537,7 +575,13 @@ export default defineGame({
         ticketCount: draft.ticketCount,
         pulled: data.machine.pulled,
         status: data.machine.status,
-        nftPrizes: draft.nftPrizes.map((prize) => ({ ...prize, won: false })),
+        nftPrizes: draft.nftPrizes.map((prize) => ({
+          contract: prize.contract,
+          tokenId: prize.tokenId,
+          standard: prize.standard,
+          backing: prize.backing,
+          won: false,
+        })),
         usdgPrizes: draft.usdgPrizes.map((prize) => ({ ...prize, won: 0 })),
         prizeValue: quote.funding,
         pool: data.machine.pool,
@@ -574,19 +618,43 @@ export default defineGame({
       if (machine !== existing) storeMachine(ctx, machine);
     },
 
-    /** The winner chose the money. Burn the claim and record the payout. */
+    /** The winner kept the NFT; its backing returns to the creator's receipts. */
+    keepPrize(ctx, tx) {
+      const data = eventData(tx);
+      if (!data) return;
+      const existing = machineOf(ctx, data.machineId);
+      let machine = existing ? mergeState(existing, data.machine) : null;
+      if (!data.contract || !data.tokenId) {
+        if (machine && machine !== existing) storeMachine(ctx, machine);
+        return;
+      }
+      const id = claimIdOf(data.machineId, data.contract, data.tokenId);
+      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + id);
+      if (!claim || claim.claimed) {
+        if (machine && machine !== existing) storeMachine(ctx, machine);
+        return;
+      }
+      if (machine) {
+        machine = { ...machine, lifetimeReceipts: addAmount(machine.lifetimeReceipts, claim.backing) };
+        storeMachine(ctx, machine);
+      }
+      storeClaim(ctx, { ...claim, claimed: true, settledAs: "kept" });
+    },
+
+    /** The winner took the money. The NFT returns to its creator; record the payout. */
     claimBacking(ctx, tx) {
       const data = eventData(tx);
-      if (!data?.tokenId) return;
+      if (!data?.contract || !data.tokenId) return;
       const existing = machineOf(ctx, data.machineId);
       if (existing) {
         const next = mergeState(existing, data.machine);
         if (next !== existing) storeMachine(ctx, next);
       }
-      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + data.tokenId);
+      const id = claimIdOf(data.machineId, data.contract, data.tokenId);
+      const claim = ctx.shared.get<Claim>(CLAIM_PREFIX + id);
       if (!claim || claim.claimed) return;
       const backing = claim.backing;
-      storeClaim(ctx, { ...claim, claimed: true });
+      storeClaim(ctx, { ...claim, claimed: true, settledAs: "backing" });
       const me = readMe(ctx);
       writeMe(ctx, { ...me, claimed: addAmount(me.claimed, backing) });
       const stats = readStats(ctx);
